@@ -9,11 +9,12 @@ declare function acquireVsCodeApi(): {
   postMessage(message: unknown): void
 }
 
+const vscode = acquireVsCodeApi()
+
 function App(): React.JSX.Element {
   const [status, setStatus] = useState<RuntimeStatus>("disconnected")
   const [snapshot, setSnapshot] = useState<Extract<ExtensionToWebviewMessage, { type: "contextSnapshot" }>>()
   const [error, setError] = useState<string>()
-  const vscode = acquireVsCodeApi()
 
   useEffect(() => {
     const listener = (event: MessageEvent<ExtensionToWebviewMessage>) => {

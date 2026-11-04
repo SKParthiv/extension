@@ -1,5 +1,5 @@
 import type { TrueForgeApi } from "@truefoundry/trueforge-sdk" with { "resolution-mode": "import" }
-import type { AgentEvent, AgentRuntime, AgentSession } from "./AgentRuntime"
+import type { AgentEvent, AgentMode, AgentRuntime, AgentSession } from "./AgentRuntime"
 
 interface SessionClient {
   create(request: TrueForgeApi.CreateSessionRequest): Promise<{ data: Pick<TrueForgeApi.Session, "id"> }>
@@ -26,6 +26,7 @@ export class TrueForgeRuntime implements AgentRuntime {
   private readonly listeners = new Set<(event: AgentEvent) => void>()
   private readonly agentName: string
   private lastTurnIdBySession = new Map<string, string>()
+  private mode: AgentMode = "thinking"
 
   public constructor(options: TrueForgeRuntimeOptions) {
     this.agentName = options.agentName
@@ -62,12 +63,24 @@ export class TrueForgeRuntime implements AgentRuntime {
     })
   }
 
+  public setMode(mode: AgentMode): void {
+    this.mode = mode
+    this.emit({ type: "mode.changed", mode })
+  }
+
+  public getMode(): AgentMode {
+    return this.mode
+  }
+
   public async respondToApproval(
     sessionId: string,
     threadId: string,
     toolCallId: string,
     decision: TrueForgeApi.ApprovalDecision,
   ): Promise<void> {
+    if (this.mode !== "tool") {
+      throw new Error("Tool approvals are unavailable in Thinking mode.")
+    }
     await this.consumeTurn(sessionId, {
       input: [
         {

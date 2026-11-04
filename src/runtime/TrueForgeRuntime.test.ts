@@ -62,4 +62,47 @@ describe("TrueForgeRuntime", () => {
     })
     expect(events).toEqual(["hello"])
   })
+
+  it("defaults to read-only Thinking mode and gates approvals behind Tool mode", async () => {
+    const createTurnStream = vi.fn(async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "turn.done" as const,
+          createdAt: "2026-11-04T00:00:01Z",
+          id: "event-1",
+          state: { status: "done" as const, completedAt: "2026-11-04T00:00:01Z", output: null, requiredActions: [] },
+          threadId: null,
+        }
+      },
+    }))
+    const client = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-1" } })),
+        createTurnStream,
+        cancel: vi.fn(async () => ({})),
+      },
+    }
+    const runtime = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client,
+    })
+
+    expect(runtime.getMode()).toBe("thinking")
+    await expect(
+      runtime.respondToApproval("session-1", "thread-1", "tool-1", { status: "allow" }),
+    ).rejects.toThrow("Thinking mode")
+
+    const modes: string[] = []
+    runtime.onEvent((event) => {
+      if (event.type === "mode.changed") {
+        modes.push(event.mode)
+      }
+    })
+    runtime.setMode("tool")
+    expect(runtime.getMode()).toBe("tool")
+    expect(modes).toEqual(["tool"])
+    await runtime.respondToApproval("session-1", "thread-1", "tool-1", { status: "deny", reason: "test" })
+    expect(createTurnStream).toHaveBeenCalled()
+  })
 })

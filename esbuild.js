@@ -4,7 +4,7 @@ Promise.all([
   esbuild.build({
     entryPoints: ["src/extension.ts"],
     bundle: true,
-    external: ["vscode"],
+    external: ["vscode", "sql.js"],
     format: "cjs",
     platform: "node",
     sourcemap: true,

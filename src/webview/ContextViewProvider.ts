@@ -2,6 +2,7 @@ import * as vscode from "vscode"
 import type { WebviewToExtensionMessage } from "../shared/messages"
 import { ContextService } from "../context/ContextService"
 import { ContextDatabase } from "../context/db/Database"
+import { detectConflicts } from "../context/ContextConflicts"
 
 export class ContextViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = "trueforge.contextView"
@@ -95,6 +96,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
     const blocks = this.service.listSessionContext(this.activeSessionId)
     const sessions = this.service.listSessions()
     const library = this.service.listLibrary()
+    const conflicts = detectConflicts(blocks)
     await this.webview?.postMessage({
       type: "contextSnapshot",
       activeSessionId: this.activeSessionId,
@@ -113,6 +115,11 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
         tokenEstimate: block.tokenEstimate,
       })),
       library: library.map(({ block, visibility }) => ({ id: block.id, title: block.title, visibility })),
+      conflicts: conflicts.map(({ key, left, right }) => ({
+        key,
+        leftTitle: left.block.title,
+        rightTitle: right.block.title,
+      })),
     })
   }
 

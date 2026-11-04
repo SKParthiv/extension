@@ -91,6 +91,20 @@ button:disabled {
   gap: 8px;
 }
 
+.conflict-banner {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--vscode-editorWarning-foreground);
+  border-radius: 4px;
+  color: var(--vscode-editorWarning-foreground);
+  font-size: 11px;
+  padding: 7px 8px;
+}
+
+.conflict-banner span {
+  color: var(--vscode-descriptionForeground);
+}
+
 .section-heading,
 .context-item-header,
 .library-summary {

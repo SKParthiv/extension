@@ -121,6 +121,16 @@ function ContextPanel({
           ))}
         </div>
       )}
+      {snapshot.conflicts.length > 0 ? (
+        <div className="conflict-banner" role="status">
+          <strong>{snapshot.conflicts.length} possible conflict{snapshot.conflicts.length === 1 ? "" : "s"}</strong>
+          {snapshot.conflicts.map((conflict) => (
+            <span key={`${conflict.key}:${conflict.leftTitle}:${conflict.rightTitle}`}>
+              {conflict.key}: {conflict.leftTitle} / {conflict.rightTitle}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="library-summary">
         <strong>Context Library</strong>
         <span>{snapshot.library.length} reusable block{snapshot.library.length === 1 ? "" : "s"}</span>

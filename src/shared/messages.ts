@@ -26,4 +26,5 @@ export type ExtensionToWebviewMessage =
         tokenEstimate: number
       }>
       library: Array<{ id: string; title: string; visibility: "global" | "project" }>
+      conflicts: Array<{ key: string; leftTitle: string; rightTitle: string }>
     }

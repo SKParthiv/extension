@@ -1,0 +1,79 @@
+{
+  "name": "trueforge-context-agent",
+  "displayName": "TrueForge Context Agent",
+  "description": "A VS Code coding agent shell built around TrueForge.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "trueforge-context-agent",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:trueforge.contextView",
+    "onCommand:agent.openPanel",
+    "onCommand:agent.inlineEdit"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "trueforge",
+          "title": "TrueForge",
+          "icon": "resources/trueforge.svg"
+        }
+      ]
+    },
+    "views": {
+      "trueforge": [
+        {
+          "type": "webview",
+          "id": "trueforge.contextView",
+          "name": "Context Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agent.openPanel",
+        "title": "TrueForge: Open Agent Panel"
+      },
+      {
+        "command": "agent.inlineEdit",
+        "title": "TrueForge: Inline Edit"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "agent.inlineEdit",
+        "key": "ctrl+alt+i",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "TrueForge Context Agent",
+      "properties": {
+        "trueforge.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:8790",
+          "description": "Local TrueForge agent server URL."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "test": "node -e \"console.log('No tests yet; test placeholder passed.')\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}
+

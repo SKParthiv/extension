@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+.env
+.env.*
+*.sqlite
+*.sqlite3
+trueforge-data/
+TrueForge/
+.vscode-test/
+

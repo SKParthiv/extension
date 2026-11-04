@@ -180,4 +180,93 @@ describe("TrueForgeRuntime", () => {
     release()
     await first
   })
+
+  it("reports degraded connectivity and permits an explicit session reset", async () => {
+    const createTurnStream = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("TrueForge unavailable"))
+      .mockResolvedValueOnce({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: "turn.created" as const,
+            createdAt: "2026-11-04T00:00:00Z",
+            id: "event-1",
+            input: [],
+            previousTurnId: null,
+            state: { status: "running" as const },
+            threadId: "thread-1",
+            turnId: "turn-recovered",
+          }
+          yield {
+            type: "turn.done" as const,
+            createdAt: "2026-11-04T00:00:01Z",
+            id: "event-2",
+            state: {
+              status: "done" as const,
+              completedAt: "2026-11-04T00:00:01Z",
+              output: null,
+              requiredActions: [],
+            },
+            threadId: null,
+          }
+        },
+      })
+    const client = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-1" } })),
+        createTurnStream,
+        cancel: vi.fn(async () => ({})),
+      },
+    }
+    const runtime = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client,
+    })
+    const states: string[] = []
+    runtime.onEvent((event) => {
+      if (event.type === "connection.changed") {
+        states.push(event.state)
+      }
+    })
+
+    await runtime.createSession()
+    await expect(runtime.sendTurn("session-1", "fails")).rejects.toThrow("unavailable")
+    expect(runtime.getConnectionState()).toBe("degraded")
+
+    runtime.resetSession("session-1")
+    await runtime.sendTurn("session-1", "recovers")
+    expect(createTurnStream).toHaveBeenNthCalledWith(2, "session-1", {
+      input: [{ type: "user.message", content: "recovers" }],
+    })
+    expect(runtime.getConnectionState()).toBe("connected")
+    expect(states).toEqual(["connected", "degraded", "connected"])
+  })
+
+  it("does not reset a session while its stream is active", async () => {
+    let release!: () => void
+    const client = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-1" } })),
+        createTurnStream: vi.fn(
+          async () =>
+            new Promise<AsyncIterable<never>>((resolve) => {
+              release = () => resolve({ async *[Symbol.asyncIterator]() {} })
+            }),
+        ),
+        cancel: vi.fn(async () => ({})),
+      },
+    }
+    const runtime = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client,
+    })
+
+    const turn = runtime.sendTurn("session-1", "work")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(() => runtime.resetSession("session-1")).toThrow("active session")
+    release()
+    await turn
+  })
 })

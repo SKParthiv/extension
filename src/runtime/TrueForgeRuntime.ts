@@ -1,5 +1,11 @@
 import type { TrueForgeApi } from "@truefoundry/trueforge-sdk" with { "resolution-mode": "import" }
-import type { AgentEvent, AgentMode, AgentRuntime, AgentSession } from "./AgentRuntime"
+import type {
+  AgentEvent,
+  AgentMode,
+  AgentRuntime,
+  AgentSession,
+  RuntimeConnectionState,
+} from "./AgentRuntime"
 
 interface SessionClient {
   create(request: TrueForgeApi.CreateSessionRequest): Promise<{ data: Pick<TrueForgeApi.Session, "id"> }>
@@ -28,6 +34,7 @@ export class TrueForgeRuntime implements AgentRuntime {
   private lastTurnIdBySession = new Map<string, string>()
   private activeTurns = new Set<string>()
   private mode: AgentMode = "thinking"
+  private connectionState: RuntimeConnectionState = "disconnected"
 
   public constructor(options: TrueForgeRuntimeOptions) {
     this.agentName = options.agentName
@@ -50,12 +57,18 @@ export class TrueForgeRuntime implements AgentRuntime {
     if (!this.agentName) {
       throw new Error("TrueForge agent name is not configured.")
     }
-    const response = await this.client.sessions.create({
-      agent: { name: this.agentName },
-    })
-    const sessionId = response.data.id
-    this.emit({ type: "session.created", sessionId })
-    return { id: sessionId }
+    try {
+      const response = await this.client.sessions.create({
+        agent: { name: this.agentName },
+      })
+      const sessionId = response.data.id
+      this.setConnectionState("connected")
+      this.emit({ type: "session.created", sessionId })
+      return { id: sessionId }
+    } catch (error) {
+      this.setConnectionState("degraded")
+      throw this.reportError(error)
+    }
   }
 
   public async sendTurn(sessionId: string, text: string): Promise<void> {
@@ -71,6 +84,17 @@ export class TrueForgeRuntime implements AgentRuntime {
 
   public getMode(): AgentMode {
     return this.mode
+  }
+
+  public getConnectionState(): RuntimeConnectionState {
+    return this.connectionState
+  }
+
+  public resetSession(sessionId: string): void {
+    if (this.activeTurns.has(sessionId)) {
+      throw new Error(`Cannot reset an active session: ${sessionId}`)
+    }
+    this.lastTurnIdBySession.delete(sessionId)
   }
 
   public async respondToApproval(
@@ -119,14 +143,14 @@ export class TrueForgeRuntime implements AgentRuntime {
         ...request,
         ...(previousTurnId ? { previousTurnId } : {}),
       })
+      this.setConnectionState("connected")
 
       for await (const event of response) {
         this.mapEvent(sessionId, event)
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.emit({ type: "error", message })
-      throw error
+      this.setConnectionState("degraded")
+      throw this.reportError(error)
     } finally {
       this.activeTurns.delete(sessionId)
     }
@@ -187,6 +211,20 @@ export class TrueForgeRuntime implements AgentRuntime {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
     })
+  }
+
+  private setConnectionState(state: RuntimeConnectionState): void {
+    if (this.connectionState === state) {
+      return
+    }
+    this.connectionState = state
+    this.emit({ type: "connection.changed", state })
+  }
+
+  private reportError(error: unknown): Error {
+    const reported = error instanceof Error ? error : new Error(String(error))
+    this.emit({ type: "error", message: reported.message })
+    return reported
   }
 
   private emit(event: AgentEvent): void {

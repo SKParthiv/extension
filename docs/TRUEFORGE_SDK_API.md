@@ -25,3 +25,9 @@ The extension forwards cancellation to `client.sessions.cancel(sessionId)`.
 Only one streamed turn may be active per session; a second send is rejected so
 model deltas from separate turns cannot interleave. Completed turn IDs are
 retained per session and supplied as `previousTurnId` on the next turn.
+
+Connection state is explicit: successful session/turn calls report
+`connected`, failed calls report `degraded`, and callers can use
+`resetSession(sessionId)` after confirming that the remote session must start a
+new turn chain. The adapter does not automatically retry a failed stream,
+because retrying after partial delivery could duplicate a user turn.

@@ -5,6 +5,7 @@ export interface AgentSession {
 }
 
 export type AgentMode = "thinking" | "tool"
+export type RuntimeConnectionState = "disconnected" | "connected" | "degraded"
 
 export type AgentEvent =
   | { type: "session.created"; sessionId: string }
@@ -15,6 +16,7 @@ export type AgentEvent =
   | { type: "tool.response_required"; threadId: string; toolCalls: TrueForgeApi.ToolCallRef[] }
   | { type: "usage"; inputTokens: number; outputTokens: number }
   | { type: "turn.done"; state: TrueForgeApi.TurnDoneEventState }
+  | { type: "connection.changed"; state: RuntimeConnectionState }
   | { type: "error"; message: string }
 
 export interface AgentRuntime {
@@ -22,6 +24,8 @@ export interface AgentRuntime {
   sendTurn(sessionId: string, text: string): Promise<void>
   setMode(mode: AgentMode): void
   getMode(): AgentMode
+  getConnectionState(): RuntimeConnectionState
+  resetSession(sessionId: string): void
   cancel(sessionId: string): Promise<void>
   respondToApproval(
     sessionId: string,

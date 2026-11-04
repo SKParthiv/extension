@@ -18,6 +18,15 @@ export interface CreateBlockInput {
   scope?: ContextScope
 }
 
+export interface CaptureObservationInput {
+  sessionId: string
+  content: string
+  provenance: string
+  title?: string
+  originalRef?: string
+  tokenEstimate?: number
+}
+
 export interface ContextBlock {
   id: string
   title: string
@@ -82,6 +91,21 @@ export class ContextService {
       )
     })
     return this.requireBlock(id)
+  }
+
+  public async captureObservation(input: CaptureObservationInput): Promise<ContextBlock> {
+    const title = input.title?.trim() || "Observation"
+    const block = await this.create({
+      sessionId: input.sessionId,
+      title,
+      content: input.content,
+      sourceType: "observation",
+      provenance: input.provenance,
+      originalRef: input.originalRef,
+      tokenEstimate: input.tokenEstimate,
+      scope: "task",
+    })
+    return block
   }
 
   public async edit(sessionId: string, blockId: string, title: string, content: string): Promise<void> {

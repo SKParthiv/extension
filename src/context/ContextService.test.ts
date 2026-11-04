@@ -36,6 +36,30 @@ describe("ContextService", () => {
     }
   })
 
+  it("captures observations in Inbox without changing their source or injecting them", async () => {
+    const { database, service } = await setup()
+    try {
+      const observation = await service.captureObservation({
+        sessionId: "session-a",
+        content: "The parser rejects empty input.",
+        provenance: "turn:turn-7",
+        originalRef: "file:src/parser.ts:42",
+      })
+      expect(observation.sourceType).toBe("observation")
+      expect(observation.provenance).toBe("turn:turn-7")
+      expect(observation.originalRef).toBe("file:src/parser.ts:42")
+      expect(service.getMembership("session-a", observation.id)).toMatchObject({
+        status: "inbox",
+        scope: "task",
+        priority: null,
+        pinned: false,
+      })
+      expect(service.listSessionContext("session-a")).toHaveLength(1)
+    } finally {
+      database.close()
+    }
+  })
+
   it("moves, stores, attaches and copies with the required identity semantics", async () => {
     const { database, service } = await setup()
     try {
@@ -87,4 +111,3 @@ describe("ContextService", () => {
     }
   })
 })
-

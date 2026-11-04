@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { ContextDatabase, QueryRow } from "./db/Database"
+import type { ContextCandidate } from "./ContextSelector"
 
 export type ContextScope = "task" | "project" | "global"
 export type ContextPriority = "P0" | "P1" | "P2" | "P3"
@@ -281,6 +282,34 @@ export class ContextService {
     return this.requireMembership(sessionId, blockId)
   }
 
+  public listSessionContext(sessionId: string): ContextCandidate[] {
+    this.requireSession(sessionId)
+    return this.database
+      .all(
+        `SELECT b.*, m.session_id, m.block_id, m.scope, m.priority, m.status, m.position, m.pinned, m.locked
+         FROM context_blocks b
+         JOIN session_memberships m ON m.block_id = b.id
+         WHERE m.session_id = ?
+         ORDER BY m.position, b.id`,
+        [sessionId],
+      )
+      .map((row) => ({ block: toBlock(row), membership: toMembership(row) }))
+  }
+
+  public listLibrary(): Array<{ block: ContextBlock; visibility: LibraryVisibility }> {
+    return this.database
+      .all(
+        `SELECT b.*, l.visibility
+         FROM context_blocks b
+         JOIN library_entries l ON l.block_id = b.id
+         ORDER BY b.updated_at DESC, b.id`,
+      )
+      .map((row) => ({
+        block: toBlock(row),
+        visibility: row.visibility as LibraryVisibility,
+      }))
+  }
+
   private requireSession(sessionId: string): void {
     if (this.database.all("SELECT id FROM app_sessions WHERE id = ?", [sessionId]).length === 0) {
       throw new Error(`Unknown session: ${sessionId}`)
@@ -355,4 +384,3 @@ function toMembership(row: QueryRow): SessionMembership {
     locked: Number(row.locked) === 1,
   }
 }
-

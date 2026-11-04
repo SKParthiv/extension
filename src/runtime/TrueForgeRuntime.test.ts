@@ -105,4 +105,79 @@ describe("TrueForgeRuntime", () => {
     await runtime.respondToApproval("session-1", "thread-1", "tool-1", { status: "deny", reason: "test" })
     expect(createTurnStream).toHaveBeenCalled()
   })
+
+  it("forwards cancellation to TrueForge and chains the previous turn", async () => {
+    const createTurnStream = vi.fn(async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "turn.created" as const,
+          createdAt: "2026-11-04T00:00:00Z",
+          id: "event-1",
+          input: [],
+          previousTurnId: null,
+          state: { status: "running" as const },
+          threadId: "thread-1",
+          turnId: "turn-1",
+        }
+        yield {
+          type: "turn.done" as const,
+          createdAt: "2026-11-04T00:00:01Z",
+          id: "event-2",
+          state: { status: "done" as const, completedAt: "2026-11-04T00:00:01Z", output: null, requiredActions: [] },
+          threadId: null,
+        }
+      },
+    }))
+    const cancel = vi.fn(async () => ({}))
+    const client = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-1" } })),
+        createTurnStream,
+        cancel,
+      },
+    }
+    const runtime = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client,
+    })
+
+    await runtime.sendTurn("session-1", "first")
+    await runtime.sendTurn("session-1", "second")
+    await runtime.cancel("session-1")
+
+    expect(createTurnStream).toHaveBeenNthCalledWith(2, "session-1", {
+      input: [{ type: "user.message", content: "second" }],
+      previousTurnId: "turn-1",
+    })
+    expect(cancel).toHaveBeenCalledWith("session-1")
+  })
+
+  it("rejects overlapping turns so streamed responses cannot interleave", async () => {
+    let release!: () => void
+    const createTurnStream = vi.fn(
+      async () =>
+        new Promise<AsyncIterable<never>>((resolve) => {
+          release = () => resolve({ async *[Symbol.asyncIterator]() {} })
+        }),
+    )
+    const client = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-1" } })),
+        createTurnStream,
+        cancel: vi.fn(async () => ({})),
+      },
+    }
+    const runtime = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client,
+    })
+
+    const first = runtime.sendTurn("session-1", "first")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await expect(runtime.sendTurn("session-1", "second")).rejects.toThrow("already running")
+    release()
+    await first
+  })
 })

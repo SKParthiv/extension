@@ -26,6 +26,7 @@ export class TrueForgeRuntime implements AgentRuntime {
   private readonly listeners = new Set<(event: AgentEvent) => void>()
   private readonly agentName: string
   private lastTurnIdBySession = new Map<string, string>()
+  private activeTurns = new Set<string>()
   private mode: AgentMode = "thinking"
 
   public constructor(options: TrueForgeRuntimeOptions) {
@@ -108,6 +109,10 @@ export class TrueForgeRuntime implements AgentRuntime {
     sessionId: string,
     request: TrueForgeApi.CreateTurnSessionsStreamRequest,
   ): Promise<void> {
+    if (this.activeTurns.has(sessionId)) {
+      throw new Error(`A turn is already running for session: ${sessionId}`)
+    }
+    this.activeTurns.add(sessionId)
     try {
       const previousTurnId = this.lastTurnIdBySession.get(sessionId)
       const response = await this.client.sessions.createTurnStream(sessionId, {
@@ -116,19 +121,21 @@ export class TrueForgeRuntime implements AgentRuntime {
       })
 
       for await (const event of response) {
-        this.mapEvent(event)
+        this.mapEvent(sessionId, event)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.emit({ type: "error", message })
       throw error
+    } finally {
+      this.activeTurns.delete(sessionId)
     }
   }
 
-  private mapEvent(event: TrueForgeApi.TurnStreamingEvent): void {
+  private mapEvent(sessionId: string, event: TrueForgeApi.TurnStreamingEvent): void {
     switch (event.type) {
       case "turn.created":
-        this.lastTurnIdBySession.set(event.threadId ?? "", event.turnId)
+        this.lastTurnIdBySession.set(sessionId, event.turnId)
         return
       case "model.message.delta":
         if (event.content || event.reasoningContent) {

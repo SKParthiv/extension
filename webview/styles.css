@@ -1,0 +1,98 @@
+:root {
+  color-scheme: dark;
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 280px;
+}
+
+.app {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.session-header,
+.status-card {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.eyebrow {
+  color: var(--vscode-textLink-foreground);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.session-placeholder {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.status-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--vscode-editor-background);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+}
+
+.status-idle {
+  background: var(--vscode-testing-iconPassed);
+}
+
+.status-running {
+  background: var(--vscode-charts-yellow);
+}
+
+.empty-state,
+.loading-state {
+  color: var(--vscode-descriptionForeground);
+  padding: 18px 4px;
+  text-align: center;
+}
+
+.empty-state h1,
+.empty-state p,
+.loading-state p {
+  margin: 4px 0;
+}
+
+.empty-state h1 {
+  color: var(--vscode-foreground);
+  font-size: 16px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--vscode-widget-border);
+  border-top-color: var(--vscode-textLink-foreground);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

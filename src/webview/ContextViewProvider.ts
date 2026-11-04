@@ -21,29 +21,18 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
 
   private getHtml(webview: vscode.Webview): string {
     const nonce = createNonce()
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "out", "webview.js"))
     return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TrueForge Context Agent</title>
 </head>
 <body>
-  <main>
-    <h1>TrueForge</h1>
-    <p>Agent panel is ready.</p>
-    <p id="status">Runtime: disconnected</p>
-  </main>
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    window.addEventListener("message", event => {
-      if (event.data?.type === "runtimeStatus") {
-        document.getElementById("status").textContent = "Runtime: " + event.data.status;
-      }
-    });
-    vscode.postMessage({ type: "ready" });
-  </script>
+  <div id="root"></div>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`
   }
@@ -57,4 +46,3 @@ function createNonce(): string {
   }
   return value
 }
-

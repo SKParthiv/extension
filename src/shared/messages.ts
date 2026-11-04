@@ -5,6 +5,7 @@ export type WebviewToExtensionMessage =
   | { type: "sendPrompt"; text: string }
   | { type: "cancelTurn" }
   | { type: "setMode"; mode: "thinking" | "tool" }
+  | { type: "toolApproval"; threadId: string; toolCallId: string; decision: "allow" | "deny" }
   | { type: "contextAction"; action: "store" | "attach" | "move" | "copy"; blockId: string; destinationSessionId?: string }
   | { type: "selectSession"; sessionId: string }
 
@@ -14,6 +15,18 @@ export type ExtensionToWebviewMessage =
   | { type: "userMessage"; text: string }
   | { type: "assistantDelta"; text: string }
   | { type: "assistantMessage"; text: string }
+  | {
+      type: "contextAssembly"
+      budget: number
+      usedTokens: number
+      selected: Array<{ title: string; tokenEstimate: number; reason: "pinned" | "priority" | "position" }>
+      omitted: Array<{ title: string; tokenEstimate: number; reason: "budget" }>
+    }
+  | {
+      type: "toolApprovalRequired"
+      threadId: string
+      toolCalls: Array<{ id: string; sourceEventId: string }>
+    }
   | { type: "error"; message: string }
   | {
       type: "contextSnapshot"

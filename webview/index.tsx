@@ -18,6 +18,8 @@ function App(): React.JSX.Element {
   const [connection, setConnection] = useState<"disconnected" | "connected" | "degraded">("disconnected")
   const [prompt, setPrompt] = useState("")
   const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([])
+  const [approvals, setApprovals] = useState<Array<{ threadId: string; id: string; sourceEventId: string }>>([])
+  const [assembly, setAssembly] = useState<Extract<ExtensionToWebviewMessage, { type: "contextAssembly" }>>()
 
   useEffect(() => {
     const listener = (event: MessageEvent<ExtensionToWebviewMessage>) => {
@@ -36,7 +38,24 @@ function App(): React.JSX.Element {
           return [...current.slice(0, -1), { ...last, text: last.text + event.data.text }]
         })
       } else if (event.data.type === "assistantMessage") {
-        setMessages((current) => [...current, { role: "assistant", text: event.data.text }])
+        setMessages((current) => {
+          const last = current[current.length - 1]
+          if (!last || last.role !== "assistant") {
+            return [...current, { role: "assistant", text: event.data.text }]
+          }
+          return [...current.slice(0, -1), { ...last, text: event.data.text }]
+        })
+      } else if (event.data.type === "toolApprovalRequired") {
+        setApprovals((current) => [
+          ...current,
+          ...event.data.toolCalls.map((toolCall) => ({
+            threadId: event.data.threadId,
+            id: toolCall.id,
+            sourceEventId: toolCall.sourceEventId,
+          })),
+        ])
+      } else if (event.data.type === "contextAssembly") {
+        setAssembly(event.data)
       } else if (event.data.type === "contextSnapshot") {
         setSnapshot(event.data)
         setError(undefined)
@@ -71,6 +90,7 @@ function App(): React.JSX.Element {
         <span>Runtime: {status} ({connection})</span>
       </section>
       {error ? <div className="error-banner" role="alert">{error}</div> : null}
+      {assembly ? <AssemblySummary assembly={assembly} /> : null}
       <ChatPanel
         status={status}
         prompt={prompt}
@@ -82,6 +102,11 @@ function App(): React.JSX.Element {
         }}
         onCancel={() => vscode.postMessage({ type: "cancelTurn" })}
         onModeChange={(mode) => vscode.postMessage({ type: "setMode", mode })}
+        approvals={approvals}
+        onApproval={(threadId, toolCallId, decision) => {
+          vscode.postMessage({ type: "toolApproval", threadId, toolCallId, decision })
+          setApprovals((current) => current.filter((approval) => approval.id !== toolCallId))
+        }}
       />
       {snapshot ? (
         <ContextPanel snapshot={snapshot} onAction={(blockId, action) => vscode.postMessage({ type: "contextAction", blockId, action })} />
@@ -105,6 +130,35 @@ function App(): React.JSX.Element {
   )
 }
 
+function AssemblySummary({
+  assembly,
+}: {
+  assembly: Extract<ExtensionToWebviewMessage, { type: "contextAssembly" }>
+}): React.JSX.Element {
+  return (
+    <section className="assembly-summary" aria-label="Context assembly">
+      <div className="section-heading">
+        <strong>Context assembled</strong>
+        <span className="muted">{assembly.usedTokens}/{assembly.budget} tokens</span>
+      </div>
+      {assembly.selected.length > 0 ? (
+        <div className="assembly-list">
+          {assembly.selected.map((item) => (
+            <span className="assembly-item" key={`selected:${item.title}`}>
+              {item.title} · {item.reason} · {item.tokenEstimate} tok
+            </span>
+          ))}
+        </div>
+      ) : <span className="muted">No session blocks selected.</span>}
+      {assembly.omitted.length > 0 ? (
+        <span className="muted">
+          Omitted for budget: {assembly.omitted.map((item) => item.title).join(", ")}
+        </span>
+      ) : null}
+    </section>
+  )
+}
+
 function ChatPanel({
   status,
   prompt,
@@ -113,6 +167,8 @@ function ChatPanel({
   onSend,
   onCancel,
   onModeChange,
+  approvals,
+  onApproval,
 }: {
   status: RuntimeStatus
   prompt: string
@@ -121,6 +177,8 @@ function ChatPanel({
   onSend: () => void
   onCancel: () => void
   onModeChange: (mode: "thinking" | "tool") => void
+  approvals: Array<{ threadId: string; id: string; sourceEventId: string }>
+  onApproval: (threadId: string, toolCallId: string, decision: "allow" | "deny") => void
 }): React.JSX.Element {
   return (
     <section className="chat-panel" aria-label="TrueForge agent chat">
@@ -143,6 +201,21 @@ function ChatPanel({
           </div>
         ))}
       </div>
+      {approvals.length > 0 ? (
+        <div className="approval-list" aria-label="Pending tool approvals">
+          {approvals.map((approval) => (
+            <div className="approval-card" key={`${approval.threadId}:${approval.id}`}>
+              <strong>TrueForge requests tool approval</strong>
+              <code>{approval.id}</code>
+              <span className="muted">Source event: {approval.sourceEventId}</span>
+              <div className="approval-actions">
+                <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "allow")}>Allow</button>
+                <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "deny")}>Deny</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <textarea
         aria-label="Prompt"
         placeholder="Ask TrueForge to inspect or change your project…"

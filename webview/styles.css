@@ -76,6 +76,24 @@ button:disabled {
   padding: 7px 8px;
 }
 
+.assembly-summary {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.assembly-list {
+  display: grid;
+  gap: 4px;
+}
+
+.assembly-item {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
 .context-panel {
   display: grid;
   gap: 10px;
@@ -114,6 +132,30 @@ button:disabled {
 
 .chat-assistant {
   background: var(--vscode-editor-background);
+}
+
+.approval-list {
+  display: grid;
+  gap: 8px;
+}
+
+.approval-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--vscode-editorWarning-foreground);
+  border-radius: 5px;
+  padding: 8px;
+}
+
+.approval-card code,
+.approval-card .muted {
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
 }
 
 textarea {

@@ -64,7 +64,7 @@
         },
         "trueforge.agentName": {
           "type": "string",
-          "default": "",
+          "default": "forge-demo-agent",
           "description": "Configured TrueForge agent name used for chat sessions."
         }
       }

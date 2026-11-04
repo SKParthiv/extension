@@ -3,6 +3,7 @@ import type { WebviewToExtensionMessage } from "../shared/messages"
 import { ContextService } from "../context/ContextService"
 import { ContextDatabase } from "../context/db/Database"
 import { detectConflicts } from "../context/ContextConflicts"
+import { assembleContext } from "../context/ContextAssembler"
 import { TrueForgeRuntime } from "../runtime/TrueForgeRuntime"
 import type { AgentEvent } from "../runtime/AgentRuntime"
 
@@ -40,6 +41,10 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       }
       if (message.type === "cancelTurn") {
         await this.handleCancel()
+        return
+      }
+      if (message.type === "toolApproval") {
+        await this.handleToolApproval(message)
         return
       }
       if (message.type === "setMode") {
@@ -101,13 +106,40 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       return
     }
     try {
+      const assembly = this.buildPromptContext(prompt)
+      await this.webview?.postMessage({
+        type: "contextAssembly",
+        budget: assembly.budget,
+        usedTokens: assembly.selected.reduce((sum, item) => sum + item.candidate.block.tokenEstimate, 0),
+        selected: assembly.selected.map(({ candidate, reason }) => ({
+          title: candidate.block.title,
+          tokenEstimate: candidate.block.tokenEstimate,
+          reason,
+        })),
+        omitted: assembly.omitted.map(({ candidate, reason }) => ({
+          title: candidate.block.title,
+          tokenEstimate: candidate.block.tokenEstimate,
+          reason,
+        })),
+      })
       await this.webview?.postMessage({ type: "userMessage", text: prompt })
       await this.webview?.postMessage({ type: "runtimeStatus", status: "running" })
-      await this.runtime.sendTurn(this.runtimeSessionId, prompt)
+      await this.runtime.sendTurn(this.runtimeSessionId, formatPromptWithContext(prompt, assembly))
     } catch (error) {
       await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
       await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
     }
+  }
+
+  private buildPromptContext(prompt: string) {
+    if (!this.service || !this.activeSessionId) {
+      return assembleContext({ candidates: [], query: prompt, budget: 1200 })
+    }
+    return assembleContext({
+      candidates: this.service.listSessionContext(this.activeSessionId),
+      query: prompt,
+      budget: 1200,
+    })
   }
 
   private async handleCancel(): Promise<void> {
@@ -122,6 +154,28 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async handleToolApproval(
+    message: Extract<WebviewToExtensionMessage, { type: "toolApproval" }>,
+  ): Promise<void> {
+    if (!this.runtime || !this.runtimeSessionId) {
+      await this.webview?.postMessage({
+        type: "error",
+        message: "Cannot approve a tool call before the TrueForge session is connected.",
+      })
+      return
+    }
+    try {
+      await this.runtime.respondToApproval(
+        this.runtimeSessionId,
+        message.threadId,
+        message.toolCallId,
+        message.decision === "allow" ? { status: "allow" } : { status: "deny", reason: "Denied in VS Code." },
+      )
+    } catch (error) {
+      await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   private async handleRuntimeEvent(event: AgentEvent): Promise<void> {
     if (event.type === "connection.changed") {
       await this.webview?.postMessage({ type: "runtimeConnection", state: event.state })
@@ -129,6 +183,12 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       await this.webview?.postMessage({ type: "assistantDelta", text: event.text })
     } else if (event.type === "model.message") {
       await this.webview?.postMessage({ type: "assistantMessage", text: event.text })
+    } else if (event.type === "tool.approval_required") {
+      await this.webview?.postMessage({
+        type: "toolApprovalRequired",
+        threadId: event.threadId,
+        toolCalls: event.toolCalls.map(({ id, sourceEventId }) => ({ id, sourceEventId })),
+      })
     } else if (event.type === "turn.done") {
       await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
     } else if (event.type === "error") {
@@ -244,4 +304,17 @@ function createNonce(): string {
     value += alphabet.charAt(Math.floor(Math.random() * alphabet.length))
   }
   return value
+}
+
+function formatPromptWithContext(
+  prompt: string,
+  assembly: ReturnType<typeof assembleContext>,
+): string {
+  const selected = assembly.selected
+    .map(({ candidate }) => `### ${candidate.block.title}\n${candidate.block.content}`)
+    .join("\n\n")
+  if (!selected) {
+    return prompt
+  }
+  return `${prompt}\n\n<context>\n${selected}\n</context>`
 }

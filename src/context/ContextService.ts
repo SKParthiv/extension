@@ -42,6 +42,14 @@ export interface SessionMembership {
   locked: boolean
 }
 
+export interface AppSession {
+  id: string
+  title: string
+  trueforgeSessionId: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export class ContextService {
   public constructor(private readonly database: ContextDatabase) {}
 
@@ -307,6 +315,18 @@ export class ContextService {
       .map((row) => ({
         block: toBlock(row),
         visibility: row.visibility as LibraryVisibility,
+      }))
+  }
+
+  public listSessions(): AppSession[] {
+    return this.database
+      .all("SELECT * FROM app_sessions ORDER BY updated_at DESC, id")
+      .map((row) => ({
+        id: String(row.id),
+        title: String(row.title),
+        trueforgeSessionId: row.trueforge_session_id == null ? null : String(row.trueforge_session_id),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
       }))
   }
 

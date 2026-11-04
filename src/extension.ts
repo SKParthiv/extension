@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 import { ContextViewProvider } from "./webview/ContextViewProvider"
 
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ContextViewProvider(context.extensionUri)
+  const provider = new ContextViewProvider(context.extensionUri, context.globalStorageUri)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ContextViewProvider.viewId, provider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -28,4 +28,3 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
-

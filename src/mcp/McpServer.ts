@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { z } from "zod"
+import { assertToolExecutionAllowed } from "./ToolPolicy"
 
 export interface McpServerInfo {
   host: "127.0.0.1"
@@ -30,9 +31,12 @@ export class LocalMcpServer {
         description: "Return the supplied text without side effects.",
         inputSchema: { text: z.string().max(4000) },
       },
-      async ({ text }) => ({
+      async ({ text }) => {
+        assertToolExecutionAllowed("echo")
+        return {
         content: [{ type: "text", text }],
-      }),
+        }
+      },
     )
 
     this.mcp.registerTool(
@@ -41,9 +45,11 @@ export class LocalMcpServer {
         description: "Approval-gated write-mode echo. It has no side effect in this server.",
         inputSchema: { text: z.string().max(4000) },
       },
-      async ({ text }) => ({
-        content: [{ type: "text", text: `approval-gated echo: ${text}` }],
-      }),
+      async ({ text }) => {
+        throw new Error(
+          "echo_write is exposed for TrueForge approval orchestration and cannot execute without an approval decision.",
+        )
+      },
     )
   }
 
@@ -122,4 +128,3 @@ export class LocalMcpServer {
     await this.transport.handleRequest(request, response)
   }
 }
-

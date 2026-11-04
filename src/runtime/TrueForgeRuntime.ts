@@ -1,0 +1,189 @@
+import type { TrueForgeApi } from "@truefoundry/trueforge-sdk" with { "resolution-mode": "import" }
+import type { AgentEvent, AgentRuntime, AgentSession } from "./AgentRuntime"
+
+interface SessionClient {
+  create(request: TrueForgeApi.CreateSessionRequest): Promise<{ data: Pick<TrueForgeApi.Session, "id"> }>
+  createTurnStream(
+    sessionId: string,
+    request: TrueForgeApi.CreateTurnSessionsStreamRequest,
+  ): Promise<AsyncIterable<TrueForgeApi.TurnStreamingEvent>>
+  cancel(sessionId: string): Promise<TrueForgeApi.CancelSessionResponse>
+}
+
+interface RuntimeClient {
+  sessions: SessionClient
+}
+
+export interface TrueForgeRuntimeOptions {
+  baseUrl: string
+  agentName: string
+  token?: string
+  client?: RuntimeClient
+}
+
+export class TrueForgeRuntime implements AgentRuntime {
+  private readonly client: RuntimeClient
+  private readonly listeners = new Set<(event: AgentEvent) => void>()
+  private readonly agentName: string
+  private lastTurnIdBySession = new Map<string, string>()
+
+  public constructor(options: TrueForgeRuntimeOptions) {
+    this.agentName = options.agentName
+    if (!options.client) {
+      throw new Error("Use TrueForgeRuntime.create() when no SDK client is injected.")
+    }
+    this.client = options.client
+  }
+
+  public static async create(options: Omit<TrueForgeRuntimeOptions, "client">): Promise<TrueForgeRuntime> {
+    const sdk = await import("@truefoundry/trueforge-sdk")
+    const client = new sdk.TrueForge({
+      baseUrl: options.baseUrl,
+      ...(options.token ? { token: options.token } : {}),
+    })
+    return new TrueForgeRuntime({ ...options, client })
+  }
+
+  public async createSession(): Promise<AgentSession> {
+    if (!this.agentName) {
+      throw new Error("TrueForge agent name is not configured.")
+    }
+    const response = await this.client.sessions.create({
+      agent: { name: this.agentName },
+    })
+    const sessionId = response.data.id
+    this.emit({ type: "session.created", sessionId })
+    return { id: sessionId }
+  }
+
+  public async sendTurn(sessionId: string, text: string): Promise<void> {
+    await this.consumeTurn(sessionId, {
+      input: [{ type: "user.message", content: text }],
+    })
+  }
+
+  public async respondToApproval(
+    sessionId: string,
+    threadId: string,
+    toolCallId: string,
+    decision: TrueForgeApi.ApprovalDecision,
+  ): Promise<void> {
+    await this.consumeTurn(sessionId, {
+      input: [
+        {
+          type: "user.tool_approval",
+          threadId,
+          toolCallId,
+          approval: decision,
+        },
+      ],
+    })
+  }
+
+  public async cancel(sessionId: string): Promise<void> {
+    await this.client.sessions.cancel(sessionId)
+  }
+
+  public onEvent(listener: (event: AgentEvent) => void): { dispose(): void } {
+    this.listeners.add(listener)
+    return {
+      dispose: () => this.listeners.delete(listener),
+    }
+  }
+
+  private async consumeTurn(
+    sessionId: string,
+    request: TrueForgeApi.CreateTurnSessionsStreamRequest,
+  ): Promise<void> {
+    try {
+      const previousTurnId = this.lastTurnIdBySession.get(sessionId)
+      const response = await this.client.sessions.createTurnStream(sessionId, {
+        ...request,
+        ...(previousTurnId ? { previousTurnId } : {}),
+      })
+
+      for await (const event of response) {
+        this.mapEvent(event)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.emit({ type: "error", message })
+      throw error
+    }
+  }
+
+  private mapEvent(event: TrueForgeApi.TurnStreamingEvent): void {
+    switch (event.type) {
+      case "turn.created":
+        this.lastTurnIdBySession.set(event.threadId ?? "", event.turnId)
+        return
+      case "model.message.delta":
+        if (event.content || event.reasoningContent) {
+          this.emit({
+            type: "model.message.delta",
+            text: event.content ?? "",
+            ...(event.reasoningContent ? { reasoning: event.reasoningContent } : {}),
+          })
+        }
+        if (event.usage) {
+          this.emitUsage(event.usage)
+        }
+        return
+      case "model.message":
+        this.emit({
+          type: "model.message",
+          text: contentToText(event.content),
+          ...(event.reasoningContent ? { reasoning: event.reasoningContent } : {}),
+        })
+        if (event.usage) {
+          this.emitUsage(event.usage)
+        }
+        return
+      case "tool.approval_required":
+        this.emit({
+          type: "tool.approval_required",
+          threadId: event.threadId,
+          toolCalls: event.toolCalls,
+        })
+        return
+      case "tool.response_required":
+        this.emit({
+          type: "tool.response_required",
+          threadId: event.threadId,
+          toolCalls: event.toolCalls,
+        })
+        return
+      case "turn.done":
+        this.emit({ type: "turn.done", state: event.state })
+        return
+      default:
+        return
+    }
+  }
+
+  private emitUsage(usage: TrueForgeApi.ModelMessageUsage): void {
+    this.emit({
+      type: "usage",
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+    })
+  }
+
+  private emit(event: AgentEvent): void {
+    for (const listener of this.listeners) {
+      listener(event)
+    }
+  }
+}
+
+function contentToText(content: TrueForgeApi.ModelMessageEventContent | null | undefined): string {
+  if (!content) {
+    return ""
+  }
+  if (typeof content === "string") {
+    return content
+  }
+  return content
+    .map((part) => ("text" in part ? part.text : ""))
+    .join("")
+}

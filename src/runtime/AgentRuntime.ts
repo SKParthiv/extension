@@ -1,13 +1,28 @@
-import type { ExtensionToWebviewMessage } from "../shared/messages"
+import type { TrueForgeApi } from "@truefoundry/trueforge-sdk" with { "resolution-mode": "import" }
 
 export interface AgentSession {
   id: string
 }
 
+export type AgentEvent =
+  | { type: "session.created"; sessionId: string }
+  | { type: "model.message.delta"; text: string; reasoning?: string }
+  | { type: "model.message"; text: string; reasoning?: string }
+  | { type: "tool.approval_required"; threadId: string; toolCalls: TrueForgeApi.ToolCallRef[] }
+  | { type: "tool.response_required"; threadId: string; toolCalls: TrueForgeApi.ToolCallRef[] }
+  | { type: "usage"; inputTokens: number; outputTokens: number }
+  | { type: "turn.done"; state: TrueForgeApi.TurnDoneEventState }
+  | { type: "error"; message: string }
+
 export interface AgentRuntime {
   createSession(): Promise<AgentSession>
   sendTurn(sessionId: string, text: string): Promise<void>
   cancel(sessionId: string): Promise<void>
-  onEvent(listener: (event: ExtensionToWebviewMessage) => void): { dispose(): void }
+  respondToApproval(
+    sessionId: string,
+    threadId: string,
+    toolCallId: string,
+    decision: TrueForgeApi.ApprovalDecision,
+  ): Promise<void>
+  onEvent(listener: (event: AgentEvent) => void): { dispose(): void }
 }
-

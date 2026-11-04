@@ -166,7 +166,14 @@ function diffLines(original: string[], proposed: string[]): Operation[] {
 }
 
 function splitLines(value: string): string[] {
-  return value === "" ? [] : value.split(/\r?\n/)
+  if (value === "") {
+    return []
+  }
+  const lines = value.split(/\r?\n/)
+  if (value.endsWith("\n")) {
+    lines.pop()
+  }
+  return lines
 }
 
 function joinLines(lines: string[], originalText: string): string {
@@ -174,4 +181,3 @@ function joinLines(lines: string[], originalText: string): string {
   const trailingNewline = originalText.endsWith("\n") ? newline : ""
   return lines.join(newline) + trailingNewline
 }
-

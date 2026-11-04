@@ -81,6 +81,57 @@ button:disabled {
   gap: 10px;
 }
 
+.chat-panel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.chat-messages {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.chat-message {
+  border-radius: 5px;
+  padding: 7px 8px;
+}
+
+.chat-message p {
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.chat-user {
+  background: var(--vscode-textBlockQuote-background);
+}
+
+.chat-assistant {
+  background: var(--vscode-editor-background);
+}
+
+textarea {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  padding: 7px;
+  resize: vertical;
+  width: 100%;
+}
+
+.chat-actions {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
 .section-heading,
 .context-item-header,
 .context-meta,

@@ -2,11 +2,18 @@ export type WebviewToExtensionMessage =
   | { type: "ready" }
   | { type: "openPanel" }
   | { type: "inlineEditRequest"; instruction: string }
+  | { type: "sendPrompt"; text: string }
+  | { type: "cancelTurn" }
+  | { type: "setMode"; mode: "thinking" | "tool" }
   | { type: "contextAction"; action: "store" | "attach" | "move" | "copy"; blockId: string; destinationSessionId?: string }
   | { type: "selectSession"; sessionId: string }
 
 export type ExtensionToWebviewMessage =
   | { type: "runtimeStatus"; status: "disconnected" | "idle" | "running" }
+  | { type: "runtimeConnection"; state: "disconnected" | "connected" | "degraded" }
+  | { type: "userMessage"; text: string }
+  | { type: "assistantDelta"; text: string }
+  | { type: "assistantMessage"; text: string }
   | { type: "error"; message: string }
   | {
       type: "contextSnapshot"

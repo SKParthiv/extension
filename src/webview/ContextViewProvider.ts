@@ -3,6 +3,8 @@ import type { WebviewToExtensionMessage } from "../shared/messages"
 import { ContextService } from "../context/ContextService"
 import { ContextDatabase } from "../context/db/Database"
 import { detectConflicts } from "../context/ContextConflicts"
+import { TrueForgeRuntime } from "../runtime/TrueForgeRuntime"
+import type { AgentEvent } from "../runtime/AgentRuntime"
 
 export class ContextViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = "trueforge.contextView"
@@ -10,6 +12,8 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
   private service?: ContextService
   private activeSessionId?: string
   private webview?: vscode.Webview
+  private runtime?: TrueForgeRuntime
+  private runtimeSessionId?: string
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -27,7 +31,19 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       if (message.type === "ready") {
         await this.initialize()
         await this.postSnapshot()
-        await webviewView.webview.postMessage({ type: "runtimeStatus", status: "idle" })
+        await this.initializeRuntime()
+        return
+      }
+      if (message.type === "sendPrompt") {
+        await this.handlePrompt(message.text)
+        return
+      }
+      if (message.type === "cancelTurn") {
+        await this.handleCancel()
+        return
+      }
+      if (message.type === "setMode") {
+        this.runtime?.setMode(message.mode)
         return
       }
       if (message.type === "selectSession") {
@@ -35,10 +51,89 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
         await this.postSnapshot()
         return
       }
+
       if (message.type === "contextAction") {
         await this.handleContextAction(message)
       }
     })
+  }
+
+  private async initializeRuntime(): Promise<void> {
+    const configuration = vscode.workspace.getConfiguration("trueforge")
+    const agentName = configuration.get<string>("agentName", "").trim()
+    if (!agentName) {
+      await this.webview?.postMessage({ type: "runtimeConnection", state: "disconnected" })
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "disconnected" })
+      return
+    }
+    if (this.runtime) {
+      return
+    }
+    try {
+      this.runtime = await TrueForgeRuntime.create({
+        baseUrl: configuration.get<string>("baseUrl", "http://localhost:8790"),
+        agentName,
+      })
+      this.runtime.onEvent((event) => {
+        void this.handleRuntimeEvent(event)
+      })
+      const session = await this.runtime.createSession()
+      this.runtimeSessionId = session.id
+      await this.webview?.postMessage({ type: "runtimeConnection", state: "connected" })
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+    } catch (error) {
+      await this.webview?.postMessage({ type: "runtimeConnection", state: "degraded" })
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "disconnected" })
+      await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  private async handlePrompt(text: string): Promise<void> {
+    const prompt = text.trim()
+    if (!prompt) {
+      return
+    }
+    if (!this.runtime || !this.runtimeSessionId) {
+      await this.webview?.postMessage({
+        type: "error",
+        message: "No TrueForge agent is configured. Set trueforge.agentName in VS Code settings.",
+      })
+      return
+    }
+    try {
+      await this.webview?.postMessage({ type: "userMessage", text: prompt })
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "running" })
+      await this.runtime.sendTurn(this.runtimeSessionId, prompt)
+    } catch (error) {
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+      await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  private async handleCancel(): Promise<void> {
+    if (!this.runtime || !this.runtimeSessionId) {
+      return
+    }
+    try {
+      await this.runtime.cancel(this.runtimeSessionId)
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+    } catch (error) {
+      await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  private async handleRuntimeEvent(event: AgentEvent): Promise<void> {
+    if (event.type === "connection.changed") {
+      await this.webview?.postMessage({ type: "runtimeConnection", state: event.state })
+    } else if (event.type === "model.message.delta") {
+      await this.webview?.postMessage({ type: "assistantDelta", text: event.text })
+    } else if (event.type === "model.message") {
+      await this.webview?.postMessage({ type: "assistantMessage", text: event.text })
+    } else if (event.type === "turn.done") {
+      await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+    } else if (event.type === "error") {
+      await this.webview?.postMessage({ type: "error", message: event.message })
+    }
   }
 
   private async initialize(): Promise<void> {

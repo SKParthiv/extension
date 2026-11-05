@@ -21,6 +21,7 @@ export type ExtensionToWebviewMessage =
       usedTokens: number
       selected: Array<{ title: string; tokenEstimate: number; reason: "pinned" | "priority" | "position" }>
       omitted: Array<{ title: string; tokenEstimate: number; reason: "budget" }>
+      retrieved: Array<{ path: string; startLine: number; endLine: number; reason: string }>
     }
   | {
       type: "toolApprovalRequired"

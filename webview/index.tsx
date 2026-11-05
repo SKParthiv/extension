@@ -155,6 +155,15 @@ function AssemblySummary({
           Omitted for budget: {assembly.omitted.map((item) => item.title).join(", ")}
         </span>
       ) : null}
+      {assembly.retrieved.length > 0 ? (
+        <div className="assembly-list">
+          {assembly.retrieved.map((item) => (
+            <span className="assembly-item" key={`retrieved:${item.path}:${item.startLine}`}>
+              {item.path}:{item.startLine}-{item.endLine} · {item.reason}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </section>
   )
 }

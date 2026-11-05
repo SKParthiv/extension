@@ -106,7 +106,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       return
     }
     try {
-      const assembly = this.buildPromptContext(prompt)
+      const assembly = await this.buildPromptContext(prompt)
       await this.webview?.postMessage({
         type: "contextAssembly",
         budget: assembly.budget,
@@ -121,6 +121,12 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
           tokenEstimate: candidate.block.tokenEstimate,
           reason,
         })),
+        retrieved: assembly.retrieved.map(({ path, startLine, endLine, reason }) => ({
+          path,
+          startLine,
+          endLine,
+          reason,
+        })),
       })
       await this.webview?.postMessage({ type: "userMessage", text: prompt })
       await this.webview?.postMessage({ type: "runtimeStatus", status: "running" })
@@ -131,14 +137,21 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private buildPromptContext(prompt: string) {
+  private async buildPromptContext(prompt: string) {
     if (!this.service || !this.activeSessionId) {
       return assembleContext({ candidates: [], query: prompt, budget: 1200 })
     }
+    const workspaceFiles = await loadWorkspaceFiles()
     return assembleContext({
       candidates: this.service.listSessionContext(this.activeSessionId),
       query: prompt,
+      files: workspaceFiles,
       budget: 1200,
+      retrieval: {
+        maxFiles: 6,
+        maxCharsPerFile: 1400,
+        maxResults: 6,
+      },
     })
   }
 
@@ -313,8 +326,41 @@ function formatPromptWithContext(
   const selected = assembly.selected
     .map(({ candidate }) => `### ${candidate.block.title}\n${candidate.block.content}`)
     .join("\n\n")
-  if (!selected) {
+  const retrieved = assembly.retrieved
+    .map(({ path, text, startLine, endLine }) => `### ${path}:${startLine}-${endLine}\n${text}`)
+    .join("\n\n")
+  if (!selected && !retrieved) {
     return prompt
   }
-  return `${prompt}\n\n<context>\n${selected}\n</context>`
+  return `${prompt}\n\n<context>\n${[selected, retrieved].filter(Boolean).join("\n\n")}\n</context>`
+}
+
+async function loadWorkspaceFiles(): Promise<Array<{ path: string; content: string }>> {
+  const files = await vscode.workspace.findFiles(
+    "**/*.{ts,tsx,js,jsx,json,md,py,html,css,yml,yaml}",
+    "**/{node_modules,.git,out,dist,coverage}/**",
+    24,
+  )
+  if (!vscode.workspace.workspaceFolders?.length) {
+    return []
+  }
+
+  const results: Array<{ path: string; content: string }> = []
+  for (const file of files.sort((left, right) => left.fsPath.localeCompare(right.fsPath))) {
+    try {
+      const document = await vscode.workspace.openTextDocument(file)
+      if (document.getText().length <= 40_000) {
+        results.push({
+          path: vscode.workspace.asRelativePath(file, false),
+          content: document.getText(),
+        })
+      }
+    } catch (error) {
+      if (error instanceof vscode.FileSystemError) {
+        continue
+      }
+      throw error
+    }
+  }
+  return results
 }

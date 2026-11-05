@@ -90,6 +90,38 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
   )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agent.undoEdit", async () => {
+      const records = undo.listPending()
+      if (records.length === 0) {
+        await vscode.window.showInformationMessage("There are no TrueForge edits available to undo.")
+        return
+      }
+
+      const selected = await vscode.window.showQuickPick(
+        records.map((record) => ({
+          label: record.filePath,
+          description: "Restore the file to its pre-edit contents",
+          recordId: record.id,
+        })),
+        {
+          placeHolder: "Choose an approved TrueForge edit to undo",
+          ignoreFocusOut: true,
+        },
+      )
+      if (!selected) {
+        return
+      }
+
+      try {
+        const result = await undo.undo(selected.recordId, createUndoWorkspace())
+        await vscode.window.showInformationMessage(`TrueForge edit undone: ${result.filePath}`)
+      } catch (error) {
+        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+      }
+    }),
+  )
 }
 
 export function deactivate(): void {}
@@ -122,4 +154,18 @@ async function requestReplacement(
     throw new Error("TrueForge returned an empty inline edit.")
   }
   return replacement
+}
+
+function createUndoWorkspace() {
+  return {
+    readText: async (filePath: string) => (await vscode.workspace.openTextDocument(vscode.Uri.file(filePath))).getText(),
+    writeText: async (filePath: string, text: string) => {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath))
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text)
+      if (!(await vscode.workspace.applyEdit(edit))) {
+        throw new Error(`VS Code rejected the undo for ${filePath}.`)
+      }
+    },
+  }
 }

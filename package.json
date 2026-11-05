@@ -45,6 +45,10 @@
       {
         "command": "agent.inlineEdit",
         "title": "TrueForge: Inline Edit"
+      },
+      {
+        "command": "agent.undoEdit",
+        "title": "TrueForge: Undo Approved Edit"
       }
     ],
     "keybindings": [

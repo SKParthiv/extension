@@ -354,6 +354,15 @@ export class ContextService {
       }))
   }
 
+  public async setTrueForgeSessionId(sessionId: string, trueforgeSessionId: string): Promise<void> {
+    this.requireSession(sessionId)
+    this.database.run(
+      "UPDATE app_sessions SET trueforge_session_id = ?, updated_at = ? WHERE id = ?",
+      [trueforgeSessionId, new Date().toISOString(), sessionId],
+    )
+    await this.database.save()
+  }
+
   private requireSession(sessionId: string): void {
     if (this.database.all("SELECT id FROM app_sessions WHERE id = ?", [sessionId]).length === 0) {
       throw new Error(`Unknown session: ${sessionId}`)

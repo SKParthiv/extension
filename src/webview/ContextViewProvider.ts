@@ -14,7 +14,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
   private activeSessionId?: string
   private webview?: vscode.Webview
   private runtime?: TrueForgeRuntime
-  private runtimeSessionId?: string
+  private readonly runtimeSessionIds = new Map<string, string>()
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -53,6 +53,8 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       }
       if (message.type === "selectSession") {
         this.activeSessionId = message.sessionId
+        await this.ensureRuntimeSession()
+        await this.webview?.postMessage({ type: "sessionChanged", sessionId: message.sessionId })
         await this.postSnapshot()
         return
       }
@@ -82,8 +84,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       this.runtime.onEvent((event) => {
         void this.handleRuntimeEvent(event)
       })
-      const session = await this.runtime.createSession()
-      this.runtimeSessionId = session.id
+      await this.ensureRuntimeSession()
       await this.webview?.postMessage({ type: "runtimeConnection", state: "connected" })
       await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
     } catch (error) {
@@ -98,7 +99,9 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
     if (!prompt) {
       return
     }
-    if (!this.runtime || !this.runtimeSessionId) {
+    await this.ensureRuntimeSession()
+    const runtimeSessionId = this.activeSessionId ? this.runtimeSessionIds.get(this.activeSessionId) : undefined
+    if (!this.runtime || !runtimeSessionId) {
       await this.webview?.postMessage({
         type: "error",
         message: "No TrueForge agent is configured. Set trueforge.agentName in VS Code settings.",
@@ -110,7 +113,9 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       await this.webview?.postMessage({
         type: "contextAssembly",
         budget: assembly.budget,
-        usedTokens: assembly.selected.reduce((sum, item) => sum + item.candidate.block.tokenEstimate, 0),
+        usedTokens:
+          assembly.selected.reduce((sum, item) => sum + item.candidate.block.tokenEstimate, 0) +
+          assembly.retrieved.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0),
         selected: assembly.selected.map(({ candidate, reason }) => ({
           title: candidate.block.title,
           tokenEstimate: candidate.block.tokenEstimate,
@@ -130,7 +135,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       })
       await this.webview?.postMessage({ type: "userMessage", text: prompt })
       await this.webview?.postMessage({ type: "runtimeStatus", status: "running" })
-      await this.runtime.sendTurn(this.runtimeSessionId, formatPromptWithContext(prompt, assembly))
+      await this.runtime.sendTurn(runtimeSessionId, formatPromptWithContext(prompt, assembly))
     } catch (error) {
       await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
       await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
@@ -139,28 +144,29 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
 
   private async buildPromptContext(prompt: string) {
     if (!this.service || !this.activeSessionId) {
-      return assembleContext({ candidates: [], query: prompt, budget: 1200 })
+      return assembleContext({ candidates: [], query: prompt, budget: 4000 })
     }
     const workspaceFiles = await loadWorkspaceFiles()
     return assembleContext({
       candidates: this.service.listSessionContext(this.activeSessionId),
       query: prompt,
       files: workspaceFiles,
-      budget: 1200,
+      budget: vscode.workspace.getConfiguration("trueforge").get<number>("contextBudget", 4000),
       retrieval: {
-        maxFiles: 6,
-        maxCharsPerFile: 1400,
-        maxResults: 6,
+        maxFiles: 12,
+        maxCharsPerFile: 2400,
+        maxResults: 12,
       },
     })
   }
 
   private async handleCancel(): Promise<void> {
-    if (!this.runtime || !this.runtimeSessionId) {
+    const runtimeSessionId = this.activeSessionId ? this.runtimeSessionIds.get(this.activeSessionId) : undefined
+    if (!this.runtime || !runtimeSessionId) {
       return
     }
     try {
-      await this.runtime.cancel(this.runtimeSessionId)
+      await this.runtime.cancel(runtimeSessionId)
       await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
     } catch (error) {
       await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
@@ -170,7 +176,8 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
   private async handleToolApproval(
     message: Extract<WebviewToExtensionMessage, { type: "toolApproval" }>,
   ): Promise<void> {
-    if (!this.runtime || !this.runtimeSessionId) {
+    const runtimeSessionId = this.activeSessionId ? this.runtimeSessionIds.get(this.activeSessionId) : undefined
+    if (!this.runtime || !runtimeSessionId) {
       await this.webview?.postMessage({
         type: "error",
         message: "Cannot approve a tool call before the TrueForge session is connected.",
@@ -179,7 +186,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
     }
     try {
       await this.runtime.respondToApproval(
-        this.runtimeSessionId,
+        runtimeSessionId,
         message.threadId,
         message.toolCallId,
         message.decision === "allow" ? { status: "allow" } : { status: "deny", reason: "Denied in VS Code." },
@@ -227,6 +234,20 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       await this.database.save()
     }
     this.activeSessionId = this.activeSessionId ?? this.service.listSessions()[0]?.id
+  }
+
+  private async ensureRuntimeSession(): Promise<void> {
+    if (!this.runtime || !this.service || !this.activeSessionId) {
+      return
+    }
+    const mapped = this.service.listSessions().find((session) => session.id === this.activeSessionId)?.trueforgeSessionId
+    if (mapped) {
+      this.runtimeSessionIds.set(this.activeSessionId, mapped)
+      return
+    }
+    const session = await this.runtime.createSession()
+    this.runtimeSessionIds.set(this.activeSessionId, session.id)
+    await this.service.setTrueForgeSessionId(this.activeSessionId, session.id)
   }
 
   private async handleContextAction(
@@ -337,9 +358,8 @@ function formatPromptWithContext(
 
 async function loadWorkspaceFiles(): Promise<Array<{ path: string; content: string }>> {
   const files = await vscode.workspace.findFiles(
-    "**/*.{ts,tsx,js,jsx,json,md,py,html,css,yml,yaml}",
+    "**/*",
     "**/{node_modules,.git,out,dist,coverage}/**",
-    24,
   )
   if (!vscode.workspace.workspaceFolders?.length) {
     return []

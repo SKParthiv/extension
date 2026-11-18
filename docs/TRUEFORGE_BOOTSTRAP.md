@@ -14,7 +14,7 @@ Date: 2026-11-04
 Command:
 
 ```text
-npx --yes @truefoundry/trueforge@latest
+npx --yes @truefoundry/trueforge@0.183.0
 ```
 
 Observed startup:
@@ -27,6 +27,22 @@ Agent server listening on http://localhost:8790 (docs at /api/v1/docs)
 ```
 
 The local process is still running in the terminal used for bootstrap.
+
+## Connector and saved agent
+
+The installed SDK exposes connector management through
+`client.settings.mcpServers.createOrUpdate`. After the extension is active, run
+`TrueForge: Copy MCP Connector Credentials`, set
+`TRUEFORGE_CONNECTOR_URL`, `TRUEFORGE_MCP_TOKEN` and a model FQN already listed
+by TrueForge, then run:
+
+```text
+node scripts/bootstrap-trueforge.mjs
+```
+
+The script updates the connector named `trueforge-extension` and creates or
+updates the saved agent `trueforge-extension-agent`. It does not create a
+provider, enable cloud fallback, or print the bearer token.
 
 ## API and UI
 

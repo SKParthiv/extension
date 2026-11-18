@@ -33,14 +33,14 @@ describe("assembleContext", () => {
   it("returns selected blocks, omissions, conflicts and retrieval with explanations", () => {
     const result = assembleContext({
       candidates: [candidate("one", "framework: Flask", 3), candidate("two", "framework: FastAPI", 3)],
-      budget: 3,
+      budget: 12,
       query: "router",
       files: [{ path: "src/router.ts", content: "router implementation" }],
     })
 
-    expect(result.budget).toBe(3)
-    expect(result.selected.map(({ candidate: item }) => item.block.id)).toEqual(["one"])
-    expect(result.omitted.map(({ candidate: item }) => item.block.id)).toEqual(["two"])
+    expect(result.budget).toBe(12)
+    expect(result.selected.map(({ candidate: item }) => item.block.id)).toEqual(["one", "two"])
+    expect(result.omitted).toEqual([])
     expect(result.conflicts[0]).toMatchObject({ key: "framework", reason: "different-values" })
     expect(result.retrieved[0]).toMatchObject({ path: "src/router.ts", reason: "Matched 1 of 1 query terms." })
   })

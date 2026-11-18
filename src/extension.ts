@@ -1,18 +1,71 @@
 import * as vscode from "vscode"
+import { randomBytes } from "node:crypto"
+import * as path from "node:path"
 import { ContextViewProvider } from "./webview/ContextViewProvider"
 import { TrueForgeRuntime } from "./runtime/TrueForgeRuntime"
 import { InlineEditService, createInlineEditProposal } from "./edits/InlineEditFlow"
 import { SafeUndoService } from "./edits/SafeUndo"
 import { createVscodeDiffReviewService } from "./edits/VscodeDiffReview"
 import { approveHunk } from "./edits/EditProposal"
+import { LocalMcpServer } from "./mcp/McpServer"
 
 const undo = new SafeUndoService()
+let localMcpServer: LocalMcpServer | undefined
+let localMcpInfo: Awaited<ReturnType<LocalMcpServer["start"]>> | undefined
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  if (!workspaceRoot) {
+    await vscode.window.showErrorMessage("TrueForge requires an open workspace before the MCP server can start.")
+    return
+  }
+  const configuration = vscode.workspace.getConfiguration("trueforge")
+  const tokenKey = "trueforge.mcpBearerToken"
+  let token = await context.secrets.get(tokenKey)
+  if (!token) {
+    token = randomBytes(32).toString("hex")
+    await context.secrets.store(tokenKey, token)
+  }
+  localMcpServer = new LocalMcpServer({
+    workspaceRoot,
+    port: configuration.get<number>("mcpPort", 8765),
+    token,
+    applyHunk: async (proposal, hunkId) => {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspaceRoot, proposal.path)))
+      if (document.getText() !== proposal.originalText) {
+        throw new Error(`Proposal is stale because ${proposal.path} changed after it was created.`)
+      }
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), proposal.proposedText)
+      if (!(await vscode.workspace.applyEdit(edit))) {
+        throw new Error(`VS Code rejected approved hunk ${hunkId} for ${proposal.path}.`)
+      }
+      await document.save()
+      return { proposalId: "approved", hunkId, path: proposal.path, applied: true }
+    },
+  })
+  try {
+    localMcpInfo = await localMcpServer.start()
+  } catch (error) {
+    localMcpServer = undefined
+    await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+  }
+
   const provider = new ContextViewProvider(context.extensionUri, context.globalStorageUri)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ContextViewProvider.viewId, provider, {
       webviewOptions: { retainContextWhenHidden: true },
+    }),
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agent.copyMcpCredentials", async () => {
+      if (!localMcpInfo) {
+        await vscode.window.showErrorMessage("The local TrueForge MCP server is not running.")
+        return
+      }
+      await vscode.env.clipboard.writeText(JSON.stringify({ url: localMcpInfo.url, token: localMcpInfo.token }))
+      await vscode.window.showInformationMessage("TrueForge MCP URL and bearer token copied to the clipboard.")
     }),
   )
 
@@ -124,7 +177,11 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 }
 
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> {
+  await localMcpServer?.stop()
+  localMcpServer = undefined
+  localMcpInfo = undefined
+}
 
 async function requestReplacement(
   runtime: TrueForgeRuntime,

@@ -45,6 +45,10 @@ function App(): React.JSX.Element {
           }
           return [...current.slice(0, -1), { ...last, text: event.data.text }]
         })
+      } else if (event.data.type === "sessionChanged") {
+        setMessages([])
+        setApprovals([])
+        setAssembly(undefined)
       } else if (event.data.type === "toolApprovalRequired") {
         setApprovals((current) => [
           ...current,

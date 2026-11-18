@@ -15,6 +15,7 @@ export type ExtensionToWebviewMessage =
   | { type: "userMessage"; text: string }
   | { type: "assistantDelta"; text: string }
   | { type: "assistantMessage"; text: string }
+  | { type: "sessionChanged"; sessionId: string }
   | {
       type: "contextAssembly"
       budget: number

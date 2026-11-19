@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { promisify } from "node:util"
 import { retrieveLocalText } from "../context/LocalRetriever"
 import { assertCommandAllowed } from "../tools/CommandPolicy"
+import { createEditProposal, approveHunk, type EditProposal, type EditHunk } from "../edits/EditProposal"
 
 const execFileAsync = promisify(execFile)
 const MAX_FILE_BYTES = 200_000
@@ -12,10 +13,13 @@ const MAX_OUTPUT_CHARS = 30_000
 const DEFAULT_IGNORED = new Set([".git", "node_modules", "out", "dist", "coverage", ".vscode-test"])
 
 export interface ProposedChange {
+  id: string
   path: string
   originalText: string
   originalHash: string
   proposedText: string
+  editProposal: EditProposal
+  appliedHunkIds: Set<string>
 }
 
 export interface WorkspaceToolsOptions {
@@ -98,11 +102,33 @@ export class WorkspaceTools {
         searchFiles.push({ path: this.relative(file), content: await fs.readFile(file, "utf8") })
       }
     }
-    const snippets = retrieveLocalText(query, searchFiles, {
-      maxFiles: maxResults,
-      maxResults,
-      maxCharsPerFile: Math.max(200, Math.floor((budget * 4) / Math.max(maxResults, 1))),
-    })
+
+    const clauses = query
+      .split(/[.!?;\n]+/)
+      .map((c) => c.trim())
+      .filter((c) => c.length > 5)
+    const searchQueries = clauses.length > 1 ? [query, ...clauses] : [query]
+
+    const allSnippets = new Map<string, ReturnType<typeof retrieveLocalText>[number]>()
+    for (const q of searchQueries) {
+      const snippets = retrieveLocalText(q, searchFiles, {
+        maxFiles: maxResults,
+        maxResults,
+        maxCharsPerFile: Math.max(200, Math.floor((budget * 4) / Math.max(maxResults, 1))),
+      })
+      for (const s of snippets) {
+        const key = `${s.path}:${s.startLine}-${s.endLine}`
+        const existing = allSnippets.get(key)
+        if (!existing || s.score > existing.score) {
+          allSnippets.set(key, s)
+        }
+      }
+    }
+
+    const snippets = Array.from(allSnippets.values())
+      .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      .slice(0, maxResults)
+
     return {
       budget,
       usedEstimate: snippets.reduce((total, item) => total + Math.ceil(item.text.length / 4), 0),
@@ -116,13 +142,31 @@ export class WorkspaceTools {
       const filePath = await this.resolveFile(change.path)
       const originalText = await fs.readFile(filePath, "utf8")
       const id = hash(`${change.path}:${originalText}:${change.proposedText}`).slice(0, 16)
-      this.proposals.set(id, {
+      const editProposal = createEditProposal(change.path, originalText, change.proposedText)
+      const stored: ProposedChange = {
+        id,
         path: change.path,
         originalText,
         originalHash: hash(originalText),
         proposedText: change.proposedText,
+        editProposal,
+        appliedHunkIds: new Set<string>(),
+      }
+      this.proposals.set(id, stored)
+      proposals.push({
+        id,
+        path: change.path,
+        originalHash: stored.originalHash,
+        changed: originalText !== change.proposedText,
+        hunks: editProposal.hunks.map((hunk) => ({
+          id: hunk.id,
+          originalStart: hunk.originalStart,
+          originalLines: hunk.originalLines,
+          proposedStart: hunk.proposedStart,
+          proposedLines: hunk.proposedLines,
+          approved: hunk.approved,
+        })),
       })
-      proposals.push({ id, path: change.path, originalHash: hash(originalText), changed: originalText !== change.proposedText })
     }
     return { proposals }
   }
@@ -130,12 +174,32 @@ export class WorkspaceTools {
   public async applyHunk(proposalId: string, hunkId: string) {
     const proposal = this.proposals.get(proposalId)
     if (!proposal) throw new Error(`Unknown proposal: ${proposalId}`)
+    const targetHunk = proposal.editProposal.hunks.find((h) => h.id === hunkId)
+    if (!targetHunk) {
+      throw new Error(`Unknown hunk ${hunkId} in proposal ${proposalId}`)
+    }
     if (!this.options.applyHunk) {
       throw new Error("The extension has not configured the approved VS Code edit callback.")
     }
+    proposal.editProposal = approveHunk(proposal.editProposal, hunkId)
     const result = await this.options.applyHunk(proposal, hunkId)
-    this.proposals.delete(proposalId)
-    return result
+    proposal.appliedHunkIds.add(hunkId)
+    return {
+      ...(typeof result === "object" && result ? result : {}),
+      proposalId,
+      hunkId,
+      path: proposal.path,
+      applied: true,
+      remainingHunks: proposal.editProposal.hunks.length - proposal.appliedHunkIds.size,
+    }
+  }
+
+  public getProposal(proposalId: string): ProposedChange | undefined {
+    return this.proposals.get(proposalId)
+  }
+
+  public listProposals(): ProposedChange[] {
+    return Array.from(this.proposals.values())
   }
 
   public async runCommand(command: string, approved: boolean) {
@@ -149,8 +213,22 @@ export class WorkspaceTools {
     return { output: truncate(`${result.stdout}${result.stderr}`), access: approved ? "approved" : "read-only" }
   }
 
+  private async loadGitignoreRules(): Promise<string[]> {
+    try {
+      const gitignoreFile = path.join(this.options.workspaceRoot, ".gitignore")
+      const text = await fs.readFile(gitignoreFile, "utf8")
+      return text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("#"))
+    } catch {
+      return []
+    }
+  }
+
   private async collectFiles(relativePath: string): Promise<string[]> {
     const root = await this.resolveDirectory(relativePath)
+    const gitignoreRules = await this.loadGitignoreRules()
     const files: string[] = []
     const visit = async (directory: string): Promise<void> => {
       for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -158,17 +236,31 @@ export class WorkspaceTools {
         if (entry.isDirectory() && DEFAULT_IGNORED.has(entry.name)) continue
         const fullPath = path.join(directory, entry.name)
         if (entry.isSymbolicLink()) continue
+        if (this.isIgnored(fullPath, gitignoreRules)) continue
         if (entry.isDirectory()) await visit(fullPath)
-        else if (entry.isFile() && !this.isIgnored(fullPath)) files.push(fullPath)
+        else if (entry.isFile()) files.push(fullPath)
       }
     }
     await visit(root)
     return files.sort((left, right) => left.localeCompare(right))
   }
 
-  private isIgnored(filePath: string): boolean {
+  private isIgnored(filePath: string, gitignoreRules: string[] = []): boolean {
     const relative = this.relative(filePath)
-    return relative.split("/").some((part) => DEFAULT_IGNORED.has(part))
+    const parts = relative.split("/")
+    if (parts.some((part) => DEFAULT_IGNORED.has(part))) {
+      return true
+    }
+    for (const rule of gitignoreRules) {
+      const clean = rule.replace(/^\/+|\/+$/g, "")
+      if (clean && (relative === clean || relative.startsWith(clean + "/") || parts.includes(clean))) {
+        return true
+      }
+      if (clean.startsWith("*.") && relative.endsWith(clean.slice(1))) {
+        return true
+      }
+    }
+    return false
   }
 
   private async resolveDirectory(relativePath: string): Promise<string> {

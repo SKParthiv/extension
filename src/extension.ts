@@ -6,7 +6,7 @@ import { TrueForgeRuntime } from "./runtime/TrueForgeRuntime"
 import { InlineEditService, createInlineEditProposal } from "./edits/InlineEditFlow"
 import { SafeUndoService } from "./edits/SafeUndo"
 import { createVscodeDiffReviewService } from "./edits/VscodeDiffReview"
-import { approveHunk } from "./edits/EditProposal"
+import { approveHunk, applyApprovedHunks } from "./edits/EditProposal"
 import { LocalMcpServer } from "./mcp/McpServer"
 
 const undo = new SafeUndoService()
@@ -30,18 +30,50 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     workspaceRoot,
     port: configuration.get<number>("mcpPort", 8765),
     token,
-    applyHunk: async (proposal, hunkId) => {
-      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspaceRoot, proposal.path)))
-      if (document.getText() !== proposal.originalText) {
-        throw new Error(`Proposal is stale because ${proposal.path} changed after it was created.`)
+    symbolProvider: async (relativePath?: string, query?: string) => {
+      if (relativePath) {
+        const uri = vscode.Uri.file(path.join(workspaceRoot, relativePath))
+        const docSymbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+          "vscode.executeDocumentSymbolProvider",
+          uri,
+        )
+        return { path: relativePath, symbols: docSymbols ?? [] }
       }
+      const wsSymbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+        "vscode.executeWorkspaceSymbolProvider",
+        query ?? "",
+      )
+      return { query: query ?? "", symbols: wsSymbols ?? [] }
+    },
+    applyHunk: async (proposal, hunkId) => {
+      const fullPath = path.join(workspaceRoot, proposal.path)
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath))
+      const beforeText = document.getText()
+      const afterText = applyApprovedHunks(proposal.editProposal)
+
+      if (beforeText === afterText) {
+        return { proposalId: proposal.id, hunkId, path: proposal.path, applied: true, noop: true }
+      }
+
       const edit = new vscode.WorkspaceEdit()
-      edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), proposal.proposedText)
+      edit.replace(
+        document.uri,
+        new vscode.Range(document.positionAt(0), document.positionAt(beforeText.length)),
+        afterText,
+      )
       if (!(await vscode.workspace.applyEdit(edit))) {
         throw new Error(`VS Code rejected approved hunk ${hunkId} for ${proposal.path}.`)
       }
       await document.save()
-      return { proposalId: "approved", hunkId, path: proposal.path, applied: true }
+
+      undo.recordAppliedEdit({
+        id: `${proposal.path}:${hunkId}:${Date.now()}`,
+        filePath: fullPath,
+        beforeText,
+        afterText,
+      })
+
+      return { proposalId: proposal.id, hunkId, path: proposal.path, applied: true }
     },
   })
   try {
@@ -51,7 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
   }
 
-  const provider = new ContextViewProvider(context.extensionUri, context.globalStorageUri)
+  const provider = new ContextViewProvider(context.extensionUri, context.globalStorageUri, () => localMcpServer)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ContextViewProvider.viewId, provider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -120,6 +152,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               if (!(await vscode.workspace.applyEdit(edit))) {
                 throw new Error(`VS Code rejected the edit for ${filePath}.`)
               }
+              await document.save()
             },
           },
           createVscodeDiffReviewService(),

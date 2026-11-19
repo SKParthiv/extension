@@ -14,6 +14,10 @@ Date: 2026-11-04
 Command:
 
 ```text
+# Ensure TrueForge allows loopback connections to the extension MCP server
+$env:NETWORK_POLICY_ENABLED = "true"
+$env:OUTBOUND_URL_ALLOWED_HOSTS = '["localhost","127.0.0.1"]'
+
 npx --yes @truefoundry/trueforge@0.183.0
 ```
 
@@ -40,9 +44,12 @@ by TrueForge, then run:
 node scripts/bootstrap-trueforge.mjs
 ```
 
-The script updates the connector named `trueforge-extension` and creates or
-updates the saved agent `trueforge-extension-agent`. It does not create a
-provider, enable cloud fallback, or print the bearer token.
+The script updates the connector named `trueforge-extension`, creates or
+updates the saved agent `trueforge-extension-agent`, and performs a post-creation
+assertion verifying that all eight tools are enabled, approval is enforced on
+`apply_hunk` and `run_command`, the iteration limit is configured to 64, and the
+model is attached. It does not create a provider, enable cloud fallback, or print
+the bearer token.
 
 ## API and UI
 

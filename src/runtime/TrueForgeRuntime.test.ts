@@ -269,4 +269,86 @@ describe("TrueForgeRuntime", () => {
     release()
     await turn
   })
+
+  it("enriches tool.approval_required events with tool name, arguments and sessionId", async () => {
+    const createTurnStream = vi.fn(async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "turn.created" as const,
+          createdAt: "2026-11-04T00:00:00Z",
+          id: "event-1",
+          input: [],
+          previousTurnId: null,
+          state: { status: "running" as const },
+          threadId: "thread-1",
+          turnId: "turn-1",
+        }
+        yield {
+          type: "model.message" as const,
+          createdAt: "2026-11-04T00:00:01Z",
+          id: "evt-model-msg",
+          threadId: "thread-1",
+          content: "I need to run a command",
+          toolCalls: [
+            {
+              id: "call-1",
+              type: "function" as const,
+              function: {
+                name: "run_command",
+                arguments: JSON.stringify({ command: "pytest tests/test_cli.py" }),
+              },
+              toolInfo: {
+                type: "mcp" as const,
+                name: "run_command",
+                serverId: "srv-1",
+                serverName: "trueforge-extension",
+              },
+            },
+          ],
+        }
+        yield {
+          type: "tool.approval_required" as const,
+          createdAt: "2026-11-04T00:00:02Z",
+          id: "evt-approval",
+          threadId: "thread-1",
+          toolCalls: [{ id: "call-1", sourceEventId: "evt-model-msg" }],
+        }
+      },
+    }))
+    const client = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-42" } })),
+        createTurnStream,
+        cancel: vi.fn(async () => ({})),
+      },
+    }
+    const runtime = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client,
+    })
+
+    const approvalEvents: any[] = []
+    runtime.onEvent((event) => {
+      if (event.type === "tool.approval_required") {
+        approvalEvents.push(event)
+      }
+    })
+
+    await runtime.sendTurn("session-42", "run tests")
+    expect(approvalEvents).toHaveLength(1)
+    expect(approvalEvents[0]).toMatchObject({
+      type: "tool.approval_required",
+      sessionId: "session-42",
+      threadId: "thread-1",
+      toolCalls: [
+        {
+          id: "call-1",
+          sourceEventId: "evt-model-msg",
+          toolName: "run_command",
+          arguments: { command: "pytest tests/test_cli.py" },
+        },
+      ],
+    })
+  })
 })

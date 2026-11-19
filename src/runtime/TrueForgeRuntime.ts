@@ -33,6 +33,7 @@ export class TrueForgeRuntime implements AgentRuntime {
   private readonly agentName: string
   private lastTurnIdBySession = new Map<string, string>()
   private activeTurns = new Set<string>()
+  private knownToolCalls = new Map<string, { id: string; name: string; arguments: Record<string, unknown> | string }>()
   private mode: AgentMode = "thinking"
   private connectionState: RuntimeConnectionState = "disconnected"
 
@@ -167,49 +168,87 @@ export class TrueForgeRuntime implements AgentRuntime {
             type: "model.message.delta",
             text: event.content ?? "",
             ...(event.reasoningContent ? { reasoning: event.reasoningContent } : {}),
+            sessionId,
           })
         }
         if (event.usage) {
-          this.emitUsage(event.usage)
+          this.emitUsage(event.usage, sessionId)
         }
         return
       case "model.message":
+        if (event.toolCalls) {
+          for (const tc of event.toolCalls) {
+            let parsedArgs: Record<string, unknown> | string = tc.function.arguments
+            try {
+              parsedArgs = JSON.parse(tc.function.arguments)
+            } catch {}
+            this.knownToolCalls.set(tc.id, {
+              id: tc.id,
+              name: tc.function.name,
+              arguments: parsedArgs,
+            })
+          }
+        }
         this.emit({
           type: "model.message",
           text: contentToText(event.content),
           ...(event.reasoningContent ? { reasoning: event.reasoningContent } : {}),
+          sessionId,
         })
         if (event.usage) {
-          this.emitUsage(event.usage)
+          this.emitUsage(event.usage, sessionId)
         }
         return
-      case "tool.approval_required":
+      case "tool.approval_required": {
+        const enriched = event.toolCalls.map((tc) => {
+          const info = this.knownToolCalls.get(tc.id)
+          return {
+            id: tc.id,
+            sourceEventId: tc.sourceEventId,
+            toolName: info?.name,
+            arguments: info?.arguments,
+          }
+        })
         this.emit({
           type: "tool.approval_required",
           threadId: event.threadId,
-          toolCalls: event.toolCalls,
+          toolCalls: enriched,
+          sessionId,
         })
         return
-      case "tool.response_required":
+      }
+      case "tool.response_required": {
+        const enriched = event.toolCalls.map((tc) => {
+          const info = this.knownToolCalls.get(tc.id)
+          return {
+            id: tc.id,
+            sourceEventId: tc.sourceEventId,
+            toolName: info?.name,
+            arguments: info?.arguments,
+          }
+        })
         this.emit({
           type: "tool.response_required",
           threadId: event.threadId,
-          toolCalls: event.toolCalls,
+          toolCalls: enriched,
+          sessionId,
         })
         return
+      }
       case "turn.done":
-        this.emit({ type: "turn.done", state: event.state })
+        this.emit({ type: "turn.done", state: event.state, sessionId })
         return
       default:
         return
     }
   }
 
-  private emitUsage(usage: TrueForgeApi.ModelMessageUsage): void {
+  private emitUsage(usage: TrueForgeApi.ModelMessageUsage, sessionId?: string): void {
     this.emit({
       type: "usage",
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
+      sessionId,
     })
   }
 

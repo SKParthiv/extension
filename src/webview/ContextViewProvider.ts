@@ -6,6 +6,8 @@ import { detectConflicts } from "../context/ContextConflicts"
 import { assembleContext } from "../context/ContextAssembler"
 import { TrueForgeRuntime } from "../runtime/TrueForgeRuntime"
 import type { AgentEvent } from "../runtime/AgentRuntime"
+import { createVscodeDiffReviewService } from "../edits/VscodeDiffReview"
+import type { LocalMcpServer } from "../mcp/McpServer"
 
 export class ContextViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = "trueforge.contextView"
@@ -15,10 +17,12 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
   private webview?: vscode.Webview
   private runtime?: TrueForgeRuntime
   private readonly runtimeSessionIds = new Map<string, string>()
+  private readonly pendingApprovals = new Map<string, { appSessionId: string; runtimeSessionId: string; threadId: string; toolCallId: string }>()
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly globalStorageUri: vscode.Uri,
+    private readonly getMcpServer?: () => LocalMcpServer | undefined,
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -45,6 +49,10 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
       }
       if (message.type === "toolApproval") {
         await this.handleToolApproval(message)
+        return
+      }
+      if (message.type === "reviewDiff") {
+        await this.handleReviewDiff(message.proposalId, message.hunkId)
         return
       }
       if (message.type === "setMode") {
@@ -176,7 +184,8 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
   private async handleToolApproval(
     message: Extract<WebviewToExtensionMessage, { type: "toolApproval" }>,
   ): Promise<void> {
-    const runtimeSessionId = this.activeSessionId ? this.runtimeSessionIds.get(this.activeSessionId) : undefined
+    const pending = this.pendingApprovals.get(message.toolCallId)
+    const runtimeSessionId = pending?.runtimeSessionId ?? (this.activeSessionId ? this.runtimeSessionIds.get(this.activeSessionId) : undefined)
     if (!this.runtime || !runtimeSessionId) {
       await this.webview?.postMessage({
         type: "error",
@@ -191,26 +200,77 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
         message.toolCallId,
         message.decision === "allow" ? { status: "allow" } : { status: "deny", reason: "Denied in VS Code." },
       )
+      this.pendingApprovals.delete(message.toolCallId)
     } catch (error) {
       await this.webview?.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) })
     }
   }
 
+  private async handleReviewDiff(proposalId: string, hunkId?: string): Promise<void> {
+    const server = this.getMcpServer?.()
+    if (!server) {
+      await vscode.window.showErrorMessage("Local MCP server is not active.")
+      return
+    }
+    const proposal = server.getWorkspaceTools().getProposal(proposalId)
+    if (!proposal) {
+      await vscode.window.showErrorMessage(`Proposal not found: ${proposalId}`)
+      return
+    }
+    try {
+      const diffReview = createVscodeDiffReviewService()
+      await diffReview.open(proposal.editProposal)
+    } catch (error) {
+      await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   private async handleRuntimeEvent(event: AgentEvent): Promise<void> {
+    const eventSessionId = "sessionId" in event ? event.sessionId : undefined
+    let eventAppSessionId: string | undefined
+    if (eventSessionId) {
+      for (const [appId, rId] of this.runtimeSessionIds.entries()) {
+        if (rId === eventSessionId) {
+          eventAppSessionId = appId
+          break
+        }
+      }
+    }
+
     if (event.type === "connection.changed") {
       await this.webview?.postMessage({ type: "runtimeConnection", state: event.state })
     } else if (event.type === "model.message.delta") {
-      await this.webview?.postMessage({ type: "assistantDelta", text: event.text })
+      if (!eventAppSessionId || eventAppSessionId === this.activeSessionId) {
+        await this.webview?.postMessage({ type: "assistantDelta", text: event.text })
+      }
     } else if (event.type === "model.message") {
-      await this.webview?.postMessage({ type: "assistantMessage", text: event.text })
+      if (!eventAppSessionId || eventAppSessionId === this.activeSessionId) {
+        await this.webview?.postMessage({ type: "assistantMessage", text: event.text })
+      }
     } else if (event.type === "tool.approval_required") {
+      for (const tc of event.toolCalls) {
+        this.pendingApprovals.set(tc.id, {
+          appSessionId: eventAppSessionId ?? this.activeSessionId ?? "default",
+          runtimeSessionId: eventSessionId ?? (this.activeSessionId ? this.runtimeSessionIds.get(this.activeSessionId) ?? "" : ""),
+          threadId: event.threadId,
+          toolCallId: tc.id,
+        })
+      }
       await this.webview?.postMessage({
         type: "toolApprovalRequired",
         threadId: event.threadId,
-        toolCalls: event.toolCalls.map(({ id, sourceEventId }) => ({ id, sourceEventId })),
+        sessionId: eventAppSessionId,
+        toolCalls: event.toolCalls.map((tc) => ({
+          id: tc.id,
+          sourceEventId: tc.sourceEventId,
+          toolName: tc.toolName,
+          arguments: tc.arguments,
+        })),
       })
     } else if (event.type === "turn.done") {
-      await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+      if (!eventAppSessionId || eventAppSessionId === this.activeSessionId) {
+        await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+      }
     } else if (event.type === "error") {
       await this.webview?.postMessage({ type: "error", message: event.message })
     }

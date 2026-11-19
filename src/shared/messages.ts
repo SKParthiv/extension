@@ -1,3 +1,10 @@
+export interface WebviewToolApprovalCall {
+  id: string
+  sourceEventId: string
+  toolName?: string
+  arguments?: Record<string, unknown> | string
+}
+
 export type WebviewToExtensionMessage =
   | { type: "ready" }
   | { type: "openPanel" }
@@ -6,6 +13,7 @@ export type WebviewToExtensionMessage =
   | { type: "cancelTurn" }
   | { type: "setMode"; mode: "thinking" | "tool" }
   | { type: "toolApproval"; threadId: string; toolCallId: string; decision: "allow" | "deny" }
+  | { type: "reviewDiff"; proposalId: string; hunkId?: string }
   | { type: "contextAction"; action: "store" | "attach" | "move" | "copy"; blockId: string; destinationSessionId?: string }
   | { type: "selectSession"; sessionId: string }
 
@@ -27,7 +35,8 @@ export type ExtensionToWebviewMessage =
   | {
       type: "toolApprovalRequired"
       threadId: string
-      toolCalls: Array<{ id: string; sourceEventId: string }>
+      sessionId?: string
+      toolCalls: WebviewToolApprovalCall[]
     }
   | { type: "error"; message: string }
   | {

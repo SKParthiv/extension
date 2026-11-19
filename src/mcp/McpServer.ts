@@ -85,6 +85,10 @@ export class LocalMcpServer {
     }
   }
 
+  public getWorkspaceTools(): WorkspaceTools {
+    return this.workspaceTools
+  }
+
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.url !== "/mcp") {
       response.writeHead(404, { "content-type": "text/plain" }).end("Not found")

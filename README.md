@@ -8,6 +8,8 @@ Prerequisites: Node.js 22+, VS Code 1.90+, and a locally configured TrueForge se
 
 ```powershell
 npm ci
+$env:NETWORK_POLICY_ENABLED = "true"
+$env:OUTBOUND_URL_ALLOWED_HOSTS = '["localhost","127.0.0.1"]'
 npx --yes @truefoundry/trueforge@0.183.0
 ```
 
@@ -22,7 +24,9 @@ $env:TRUEFORGE_MODEL = "<model FQN already listed by TrueForge>"
 node scripts/bootstrap-trueforge.mjs
 ```
 
-The script uses the documented `settings.mcpServers.createOrUpdate`, `models.list`, `agents.list`, `agents.create` and `agents.update` SDK methods. It fails if the model is missing and is idempotent for both connector and agent resources. No provider client or cloud fallback is embedded in the extension.
+The script uses the documented `settings.mcpServers.createOrUpdate`, `models.list`, `agents.list`, `agents.create` and `agents.update` SDK methods, followed by post-creation assertions validating all 8 tools, approval triggers for `apply_hunk` and `run_command`, iteration limit, and attached connector. It fails if the model is missing and is idempotent for both connector and agent resources. No provider client or cloud fallback is embedded in the extension.
+
+Proposals use stable diff hunks, allowing per-hunk review and approval directly in the Webview with native VS Code diff review. Applied edits are registered in the SafeUndo service and undoable on demand.
 
 Run the local checks with:
 

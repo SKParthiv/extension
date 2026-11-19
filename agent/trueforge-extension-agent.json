@@ -1,9 +1,9 @@
 {
   "instructions": "You are a VS Code coding agent. Discover workspace files and symbols with MCP before proposing changes. Use retrieve_context for requirement clauses. Never claim a change is applied until the user approves each hunk. Keep edits scoped to the request and report selected evidence.",
-  "mcpServers": [
+  "mcp_servers": [
     {
       "name": "trueforge-extension",
-      "enableTools": [
+      "enable_tools": [
         "list_workspace",
         "read_file",
         "search_workspace",
@@ -13,11 +13,11 @@
         "apply_hunk",
         "run_command"
       ],
-      "requireApprovalForTools": [
+      "require_approval_for_tools": [
         "apply_hunk",
         "run_command"
       ],
-      "preloadTools": [
+      "preload_tools": [
         "list_workspace",
         "read_file",
         "search_workspace",
@@ -27,7 +27,7 @@
     }
   ],
   "config": {
-    "iterationLimit": 64
+    "iteration_limit": 64
   },
   "model": {
     "name": "${TRUEFORGE_MODEL}"

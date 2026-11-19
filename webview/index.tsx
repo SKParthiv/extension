@@ -18,7 +18,15 @@ function App(): React.JSX.Element {
   const [connection, setConnection] = useState<"disconnected" | "connected" | "degraded">("disconnected")
   const [prompt, setPrompt] = useState("")
   const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([])
-  const [approvals, setApprovals] = useState<Array<{ threadId: string; id: string; sourceEventId: string }>>([])
+  const [approvals, setApprovals] = useState<
+    Array<{
+      threadId: string
+      id: string
+      sourceEventId: string
+      toolName?: string
+      arguments?: Record<string, unknown> | string
+    }>
+  >([])
   const [assembly, setAssembly] = useState<Extract<ExtensionToWebviewMessage, { type: "contextAssembly" }>>()
 
   useEffect(() => {
@@ -56,6 +64,8 @@ function App(): React.JSX.Element {
             threadId: event.data.threadId,
             id: toolCall.id,
             sourceEventId: toolCall.sourceEventId,
+            toolName: toolCall.toolName,
+            arguments: toolCall.arguments,
           })),
         ])
       } else if (event.data.type === "contextAssembly") {
@@ -110,6 +120,9 @@ function App(): React.JSX.Element {
         onApproval={(threadId, toolCallId, decision) => {
           vscode.postMessage({ type: "toolApproval", threadId, toolCallId, decision })
           setApprovals((current) => current.filter((approval) => approval.id !== toolCallId))
+        }}
+        onReviewDiff={(proposalId, hunkId) => {
+          vscode.postMessage({ type: "reviewDiff", proposalId, hunkId })
         }}
       />
       {snapshot ? (
@@ -182,6 +195,7 @@ function ChatPanel({
   onModeChange,
   approvals,
   onApproval,
+  onReviewDiff,
 }: {
   status: RuntimeStatus
   prompt: string
@@ -190,8 +204,15 @@ function ChatPanel({
   onSend: () => void
   onCancel: () => void
   onModeChange: (mode: "thinking" | "tool") => void
-  approvals: Array<{ threadId: string; id: string; sourceEventId: string }>
+  approvals: Array<{
+    threadId: string
+    id: string
+    sourceEventId: string
+    toolName?: string
+    arguments?: Record<string, unknown> | string
+  }>
   onApproval: (threadId: string, toolCallId: string, decision: "allow" | "deny") => void
+  onReviewDiff: (proposalId: string, hunkId?: string) => void
 }): React.JSX.Element {
   return (
     <section className="chat-panel" aria-label="TrueForge agent chat">
@@ -216,17 +237,50 @@ function ChatPanel({
       </div>
       {approvals.length > 0 ? (
         <div className="approval-list" aria-label="Pending tool approvals">
-          {approvals.map((approval) => (
-            <div className="approval-card" key={`${approval.threadId}:${approval.id}`}>
-              <strong>TrueForge requests tool approval</strong>
-              <code>{approval.id}</code>
-              <span className="muted">Source event: {approval.sourceEventId}</span>
-              <div className="approval-actions">
-                <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "allow")}>Allow</button>
-                <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "deny")}>Deny</button>
+          {approvals.map((approval) => {
+            const args = typeof approval.arguments === "object" && approval.arguments !== null
+              ? (approval.arguments as Record<string, unknown>)
+              : {}
+            const isApplyHunk = approval.toolName === "apply_hunk"
+            const isRunCommand = approval.toolName === "run_command"
+            const proposalId = typeof args.proposalId === "string" ? args.proposalId : ""
+            const hunkId = typeof args.hunkId === "string" ? args.hunkId : ""
+            const command = typeof args.command === "string" ? args.command : ""
+
+            return (
+              <div className="approval-card" key={`${approval.threadId}:${approval.id}`}>
+                <div className="approval-card-header">
+                  <strong>Approval required: <code>{approval.toolName || "tool"}</code></strong>
+                </div>
+                {isRunCommand ? (
+                  <div className="approval-details">
+                    <span className="muted">Command: </span>
+                    <code>{command}</code>
+                  </div>
+                ) : null}
+                {isApplyHunk ? (
+                  <div className="approval-details">
+                    <span className="muted">Hunk: </span>
+                    <code>{hunkId || "default"}</code>
+                    {proposalId ? (
+                      <button
+                        type="button"
+                        style={{ marginLeft: "8px", padding: "2px 8px" }}
+                        onClick={() => onReviewDiff(proposalId, hunkId)}
+                      >
+                        Review Diff
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                <span className="muted">Call ID: {approval.id}</span>
+                <div className="approval-actions">
+                  <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "allow")}>Allow</button>
+                  <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "deny")}>Deny</button>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       ) : null}
       <textarea

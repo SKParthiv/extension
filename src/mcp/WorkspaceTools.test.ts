@@ -136,3 +136,4 @@ describe("WorkspaceTools per-hunk review and safe undo", () => {
     }
   })
 })
+

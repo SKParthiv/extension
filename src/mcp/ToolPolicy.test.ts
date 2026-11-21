@@ -3,29 +3,26 @@ import { assertToolExecutionAllowed, getToolPolicy, toolPolicies } from "./ToolP
 
 describe("MCP tool policy", () => {
   it("classifies read-only and approval-required tools explicitly", () => {
-    expect(toolPolicies).toEqual([
-      { name: "echo", access: "read-only", description: "Returns supplied text without side effects." },
-      {
-        name: "echo_write",
-        access: "approval-required",
-        description: "Mutation-capable tools require an explicit approval decision.",
-      },
-    ])
-    expect(getToolPolicy("echo").access).toBe("read-only")
-    expect(getToolPolicy("echo_write").access).toBe("approval-required")
+    expect(toolPolicies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "list_workspace", access: "read-only" }),
+      expect.objectContaining({ name: "apply_hunk", access: "approval-required" }),
+      expect.objectContaining({ name: "run_command", access: "approval-required" }),
+    ]))
+    expect(getToolPolicy("list_workspace").access).toBe("read-only")
+    expect(getToolPolicy("apply_hunk").access).toBe("approval-required")
   })
 
   it("allows read-only tools and rejects missing, mismatched or denied mutation approvals", () => {
-    expect(() => assertToolExecutionAllowed("echo")).not.toThrow()
-    expect(() => assertToolExecutionAllowed("echo_write")).toThrow("Explicit approval")
+    expect(() => assertToolExecutionAllowed("list_workspace")).not.toThrow()
+    expect(() => assertToolExecutionAllowed("apply_hunk")).toThrow("Explicit approval")
     expect(() =>
-      assertToolExecutionAllowed("echo_write", { toolName: "echo", approved: true }),
+      assertToolExecutionAllowed("apply_hunk", { toolName: "list_workspace", approved: true }),
     ).toThrow("Explicit approval")
     expect(() =>
-      assertToolExecutionAllowed("echo_write", { toolName: "echo_write", approved: false, reason: "declined" }),
+      assertToolExecutionAllowed("apply_hunk", { toolName: "apply_hunk", approved: false, reason: "declined" }),
     ).toThrow("Explicit approval")
     expect(() =>
-      assertToolExecutionAllowed("echo_write", { toolName: "echo_write", approved: true }),
+      assertToolExecutionAllowed("apply_hunk", { toolName: "apply_hunk", approved: true }),
     ).not.toThrow()
   })
 })

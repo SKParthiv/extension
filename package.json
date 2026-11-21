@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "private": true,
   "publisher": "trueforge-context-agent",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -49,6 +49,10 @@
       {
         "command": "agent.undoEdit",
         "title": "TrueForge: Undo Approved Edit"
+      },
+      {
+        "command": "agent.copyMcpCredentials",
+        "title": "TrueForge: Copy MCP Connector Credentials"
       }
     ],
     "keybindings": [
@@ -68,8 +72,21 @@
         },
         "trueforge.agentName": {
           "type": "string",
-          "default": "forge-demo-agent",
+          "default": "trueforge-extension-agent",
           "description": "Configured TrueForge agent name used for chat sessions."
+        },
+        "trueforge.mcpPort": {
+          "type": "number",
+          "default": 8765,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Stable loopback port used by the extension MCP server."
+        },
+        "trueforge.contextBudget": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 200,
+          "description": "Combined token budget for Context Manager blocks and retrieved workspace evidence."
         }
       }
     }
@@ -80,7 +97,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@truefoundry/trueforge-sdk": "^0.183.0",
+    "@truefoundry/trueforge-sdk": "0.185.0",
     "@types/sql.js": "^1.4.11",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

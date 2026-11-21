@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { z } from "zod"
-import { assertToolExecutionAllowed } from "./ToolPolicy"
+import { WorkspaceTools, type WorkspaceToolsOptions } from "./WorkspaceTools"
 
 export interface McpServerInfo {
   host: "127.0.0.1"
@@ -12,45 +12,22 @@ export interface McpServerInfo {
   token: string
 }
 
+export interface LocalMcpServerOptions extends WorkspaceToolsOptions {
+  port?: number
+  token?: string
+}
+
 export class LocalMcpServer {
-  private readonly token = randomBytes(32).toString("hex")
-  private readonly mcp = new McpServer({
-    name: "trueforge-context-agent",
-    version: "0.1.0",
-  })
-  private readonly transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  })
+  private readonly token: string
+  private readonly port: number
+  private readonly workspaceTools: WorkspaceTools
   private httpServer: Server | undefined
   private info: McpServerInfo | undefined
 
-  public constructor() {
-    this.mcp.registerTool(
-      "echo",
-      {
-        description: "Return the supplied text without side effects.",
-        inputSchema: { text: z.string().max(4000) },
-      },
-      async ({ text }) => {
-        assertToolExecutionAllowed("echo")
-        return {
-        content: [{ type: "text", text }],
-        }
-      },
-    )
-
-    this.mcp.registerTool(
-      "echo_write",
-      {
-        description: "Approval-gated write-mode echo. It has no side effect in this server.",
-        inputSchema: { text: z.string().max(4000) },
-      },
-      async ({ text }) => {
-        throw new Error(
-          "echo_write is exposed for TrueForge approval orchestration and cannot execute without an approval decision.",
-        )
-      },
-    )
+  public constructor(options: LocalMcpServerOptions = { workspaceRoot: process.cwd() }) {
+    this.token = options.token ?? randomBytes(32).toString("hex")
+    this.port = options.port ?? 8765
+    this.workspaceTools = new WorkspaceTools(options)
   }
 
   public async start(): Promise<McpServerInfo> {
@@ -58,7 +35,6 @@ export class LocalMcpServer {
       return this.info
     }
 
-    await this.mcp.connect(this.transport)
     const server = createServer((request, response) => {
       void this.handleRequest(request, response)
     })
@@ -75,7 +51,15 @@ export class LocalMcpServer {
       }
       server.once("error", onError)
       server.once("listening", onListening)
-      server.listen(0, "127.0.0.1")
+      server.listen(this.port, "127.0.0.1")
+    }).catch(async (error) => {
+      this.httpServer = undefined
+      await this.closeHttpServer(server)
+      throw new Error(
+        `Unable to bind the MCP server to 127.0.0.1:${this.port}. ` +
+          "Choose a different trueforge.mcpPort or stop the process using that port.",
+        { cause: error },
+      )
     })
 
     const address = server.address()
@@ -96,35 +80,183 @@ export class LocalMcpServer {
     const server = this.httpServer
     this.httpServer = undefined
     this.info = undefined
-
-    await this.transport.close().catch((error: unknown) => {
-      if (!(error instanceof Error) || !error.message.includes("closed")) {
-        throw error
-      }
-    })
-    await this.mcp.close().catch((error: unknown) => {
-      if (!(error instanceof Error) || !error.message.includes("closed")) {
-        throw error
-      }
-    })
-
     if (server) {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()))
-      })
+      await this.closeHttpServer(server)
     }
+  }
+
+  public getWorkspaceTools(): WorkspaceTools {
+    return this.workspaceTools
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.url !== "/mcp") {
-      response.writeHead(404).end("Not found")
+      response.writeHead(404, { "content-type": "text/plain" }).end("Not found")
       return
     }
-    const authorization = request.headers.authorization
-    if (authorization !== `Bearer ${this.token}`) {
-      response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "Unauthorized" }))
+    if (request.headers.authorization !== `Bearer ${this.token}`) {
+      response
+        .writeHead(401, { "content-type": "application/json" })
+        .end(JSON.stringify({ error: "Unauthorized" }))
       return
     }
-    await this.transport.handleRequest(request, response)
+
+    const mcp = this.createMcpServer()
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+    try {
+      await mcp.connect(transport)
+      await transport.handleRequest(request, response)
+    } catch (error) {
+      if (!response.headersSent) {
+        response
+          .writeHead(500, { "content-type": "application/json" })
+          .end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }))
+      } else if (!response.writableEnded) {
+        response.end()
+      }
+    } finally {
+      await transport.close().catch(() => undefined)
+      await mcp.close().catch(() => undefined)
+    }
+  }
+
+  private createMcpServer(): McpServer {
+    const server = new McpServer({
+      name: "trueforge-context-agent",
+      version: "0.1.0",
+    })
+
+    server.registerTool(
+      "list_workspace",
+      {
+        description: "List bounded files under the active workspace. Results use cursor pagination.",
+        inputSchema: {
+          path: z.string().optional(),
+          cursor: z.string().optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+        },
+        annotations: { readOnlyHint: true },
+      },
+      async ({ path, cursor, limit }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.listWorkspace(path, cursor, limit)) }],
+      }),
+    )
+
+    server.registerTool(
+      "read_file",
+      {
+        description: "Read a bounded file or line range from the active workspace.",
+        inputSchema: {
+          path: z.string(),
+          startLine: z.number().int().min(1).optional(),
+          endLine: z.number().int().min(1).optional(),
+        },
+        annotations: { readOnlyHint: true },
+      },
+      async ({ path, startLine, endLine }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.readFile(path, startLine, endLine)) }],
+      }),
+    )
+
+    server.registerTool(
+      "search_workspace",
+      {
+        description: "Search source, tests, configuration and documentation in the workspace.",
+        inputSchema: {
+          query: z.string().min(1).max(500),
+          path: z.string().optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+        },
+        annotations: { readOnlyHint: true },
+      },
+      async ({ query, path, limit }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.searchWorkspace(query, path, limit)) }],
+      }),
+    )
+
+    server.registerTool(
+      "get_symbols",
+      {
+        description: "Return symbols from the active workspace when a VS Code symbol provider is configured.",
+        inputSchema: { path: z.string().optional(), query: z.string().optional() },
+        annotations: { readOnlyHint: true },
+      },
+      async ({ path, query }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.getSymbols(path, query)) }],
+      }),
+    )
+
+    server.registerTool(
+      "retrieve_context",
+      {
+        description: "Retrieve ranked evidence for a requirement clause under an explicit budget.",
+        inputSchema: {
+          query: z.string().min(1).max(1000),
+          budget: z.number().int().min(1).max(20000).optional(),
+          maxResults: z.number().int().min(1).max(50).optional(),
+        },
+        annotations: { readOnlyHint: true },
+      },
+      async ({ query, budget, maxResults }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.retrieveContext(query, budget, maxResults)) }],
+      }),
+    )
+
+    server.registerTool(
+      "propose_changes",
+      {
+        description: "Stage file changes for review without writing them to disk.",
+        inputSchema: {
+          changes: z.array(
+            z.object({
+              path: z.string(),
+              proposedText: z.string().max(200000),
+            }),
+          ).min(1).max(20),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false },
+      },
+      async ({ changes }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.proposeChanges(changes)) }],
+      }),
+    )
+
+    server.registerTool(
+      "apply_hunk",
+      {
+        description: "Apply one previously proposed hunk after the editor has approved it.",
+        inputSchema: {
+          proposalId: z.string(),
+          hunkId: z.string(),
+        },
+        annotations: { destructiveHint: true },
+      },
+      async ({ proposalId, hunkId }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.applyHunk(proposalId, hunkId)) }],
+      }),
+    )
+
+    server.registerTool(
+      "run_command",
+      {
+        description: "Run an approved workspace-scoped command.",
+        inputSchema: { command: z.string().min(1).max(2000), approved: z.boolean().optional() },
+        annotations: { destructiveHint: true },
+      },
+      async ({ command, approved }) => ({
+        content: [{ type: "text", text: JSON.stringify(await this.workspaceTools.runCommand(command, approved === true)) }],
+      }),
+    )
+
+    return server
+  }
+
+  private async closeHttpServer(server: Server): Promise<void> {
+    if (!server.listening) {
+      return
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()))
+    })
   }
 }

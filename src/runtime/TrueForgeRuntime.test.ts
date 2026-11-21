@@ -64,22 +64,13 @@ describe("TrueForgeRuntime", () => {
   })
 
   it("defaults to read-only Thinking mode and gates approvals behind Tool mode", async () => {
-    const createTurnStream = vi.fn(async () => ({
-      async *[Symbol.asyncIterator]() {
-        yield {
-          type: "turn.done" as const,
-          createdAt: "2026-11-04T00:00:01Z",
-          id: "event-1",
-          state: { status: "done" as const, completedAt: "2026-11-04T00:00:01Z", output: null, requiredActions: [] },
-          threadId: null,
-        }
-      },
-    }))
+    const createTurnEvents = vi.fn(async () => ({ data: [] }))
     const client = {
       sessions: {
         create: vi.fn(async () => ({ data: { id: "session-1" } })),
-        createTurnStream,
+        createTurnStream: vi.fn(),
         cancel: vi.fn(async () => ({})),
+        createTurnEvents,
       },
     }
     const runtime = new TrueForgeRuntime({
@@ -102,8 +93,65 @@ describe("TrueForgeRuntime", () => {
     runtime.setMode("tool")
     expect(runtime.getMode()).toBe("tool")
     expect(modes).toEqual(["tool"])
-    await runtime.respondToApproval("session-1", "thread-1", "tool-1", { status: "deny", reason: "test" })
-    expect(createTurnStream).toHaveBeenCalled()
+
+    // Simulate a turn.created event so the thread-to-turn mapping exists
+    // Access the private turnIdByThread via the events emitted during sendTurn
+    runtime.onEvent((event) => {
+      // trigger the mapping by simulating what consumeTurn does
+      void event
+    })
+
+    // Register the thread-to-turn mapping by simulating a turn.created event
+    // We trigger this via the private mapEvent path by sending a turn with a turn.created event
+    const createTurnStreamWithEvents = vi.fn(async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "turn.created" as const,
+          createdAt: "2026-11-04T00:00:00Z",
+          id: "event-0",
+          input: [],
+          previousTurnId: null,
+          state: { status: "running" as const },
+          threadId: "thread-1",
+          turnId: "turn-1",
+        }
+        yield {
+          type: "turn.done" as const,
+          createdAt: "2026-11-04T00:00:01Z",
+          id: "event-1",
+          state: { status: "done" as const, completedAt: "2026-11-04T00:00:01Z", output: null, requiredActions: [] },
+          threadId: null,
+        }
+      },
+    }))
+    // Replace with a stream that emits turn.created to populate the turn mapping
+    const client2 = {
+      sessions: {
+        create: vi.fn(async () => ({ data: { id: "session-1" } })),
+        createTurnStream: createTurnStreamWithEvents,
+        cancel: vi.fn(async () => ({})),
+        createTurnEvents,
+      },
+    }
+    const runtime2 = new TrueForgeRuntime({
+      baseUrl: "http://localhost:8790",
+      agentName: "local-agent",
+      client: client2,
+    })
+    runtime2.setMode("tool")
+    await runtime2.sendTurn("session-1", "setup")
+    // Now the mapping exists
+    await runtime2.respondToApproval("session-1", "thread-1", "tool-1", { status: "deny", reason: "test" })
+    expect(createTurnEvents).toHaveBeenCalledWith("session-1", "turn-1", {
+      events: [
+        {
+          type: "user.tool_approval",
+          threadId: "thread-1",
+          toolCallId: "tool-1",
+          approval: { status: "deny", reason: "test" },
+        },
+      ],
+    })
   })
 
   it("forwards cancellation to TrueForge and chains the previous turn", async () => {

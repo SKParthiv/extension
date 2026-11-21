@@ -14,6 +14,11 @@ interface SessionClient {
     request: TrueForgeApi.CreateTurnSessionsStreamRequest,
   ): Promise<AsyncIterable<TrueForgeApi.TurnStreamingEvent>>
   cancel(sessionId: string): Promise<TrueForgeApi.CancelSessionResponse>
+  createTurnEvents?(
+    sessionId: string,
+    turnId: string,
+    request: TrueForgeApi.CreateTurnEventRequest,
+  ): Promise<{ data: TrueForgeApi.TurnUserEvent[] }>
 }
 
 interface RuntimeClient {
@@ -34,6 +39,7 @@ export class TrueForgeRuntime implements AgentRuntime {
   private lastTurnIdBySession = new Map<string, string>()
   private activeTurns = new Set<string>()
   private knownToolCalls = new Map<string, { id: string; name: string; arguments: Record<string, unknown> | string }>()
+  private readonly turnIdByThread = new Map<string, string>()
   private mode: AgentMode = "thinking"
   private connectionState: RuntimeConnectionState = "disconnected"
 
@@ -107,16 +113,24 @@ export class TrueForgeRuntime implements AgentRuntime {
     if (this.mode !== "tool") {
       throw new Error("Tool approvals are unavailable in Thinking mode.")
     }
-    await this.consumeTurn(sessionId, {
-      input: [
+    const turnId = this.turnIdByThread.get(threadId)
+    if (!turnId) {
+      throw new Error(`Cannot approve tool call ${toolCallId}: unknown turn for thread ${threadId}.`)
+    }
+    if (!this.client.sessions.createTurnEvents) {
+      throw new Error("SDK does not support createTurnEvents required for tool approvals.")
+    }
+    const response = await this.client.sessions.createTurnEvents(sessionId, turnId, {
+      events: [
         {
-          type: "user.tool_approval",
+          type: "user.tool_approval" as any,
           threadId,
           toolCallId,
           approval: decision,
         },
       ],
     })
+    this.emit({ type: "approval.sent", sessionId, threadId, toolCallId, approved: decision.status === "allow" })
   }
 
   public async cancel(sessionId: string): Promise<void> {
@@ -161,6 +175,9 @@ export class TrueForgeRuntime implements AgentRuntime {
     switch (event.type) {
       case "turn.created":
         this.lastTurnIdBySession.set(sessionId, event.turnId)
+        if (event.threadId) {
+          this.turnIdByThread.set(event.threadId, event.turnId)
+        }
         return
       case "model.message.delta":
         if (event.content || event.reasoningContent) {

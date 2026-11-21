@@ -25,6 +25,7 @@ export type AgentEvent =
   | { type: "turn.done"; state: TrueForgeApi.TurnDoneEventState; sessionId?: string }
   | { type: "connection.changed"; state: RuntimeConnectionState; sessionId?: string }
   | { type: "error"; message: string; sessionId?: string }
+  | { type: "approval.sent"; sessionId: string; threadId: string; toolCallId: string; approved: boolean }
 
 export interface AgentRuntime {
   createSession(): Promise<AgentSession>

@@ -179,6 +179,14 @@ export class TrueForgeRuntime implements AgentRuntime {
           this.turnIdByThread.set(event.threadId, event.turnId)
         }
         return
+      case "turn.update":
+        this.emit({
+          type: "turn.update",
+          state: event.state,
+          ...(event.threadId ? { threadId: event.threadId } : {}),
+          sessionId,
+        })
+        return
       case "model.message.delta":
         if (event.content || event.reasoningContent) {
           this.emit({

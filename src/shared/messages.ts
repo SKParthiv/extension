@@ -193,9 +193,9 @@ export type ExtensionToWebviewMessage =
   /** The user's prompt echoed back so the chat view can render it. */
   | { type: "userMessage"; text: string; attachments?: Array<{ type: "file" | "symbol"; path: string; label: string }>; timestamp?: number }
   /** Streaming delta from an in-progress assistant reply. The webview appends `text` to the last assistant bubble. */
-  | { type: "assistantDelta"; text: string; reasoning?: string; messageId?: string; threadId?: string }
+  | { type: "assistantDelta"; text: string; reasoning?: string; messageId?: string; threadId?: string; sessionId?: string }
   /** A complete assistant message (replaces any in-progress delta for this messageId). */
-  | { type: "assistantMessage"; text: string; reasoning?: string; messageId?: string; threadId?: string; createdAt?: string }
+  | { type: "assistantMessage"; text: string; reasoning?: string; messageId?: string; threadId?: string; createdAt?: string; sessionId?: string }
   /** Final assistant output extracted from a `turn.done` event — used for deduplicated display. */
   | { type: "assistantFinalMessage"; text: string; reasoning?: string; messageId?: string; threadId?: string }
   /** The active session changed (user switched sessions). */
@@ -213,7 +213,7 @@ export type ExtensionToWebviewMessage =
       type: "contextAssembly"
       budget: number
       usedTokens: number
-      selected: Array<{ title: string; tokenEstimate: number; reason: "pinned" | "priority" | "position" }>
+      selected: Array<{ title: string; tokenEstimate: number; reason: "pinned" | "priority" | "position" | "attachment" }>
       omitted: Array<{ title: string; tokenEstimate: number; reason: "budget" }>
       retrieved: Array<{ path: string; startLine: number; endLine: number; reason: string }>
     }

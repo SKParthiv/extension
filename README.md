@@ -1,42 +1,95 @@
-# TrueForge Context Agent
+# NotTheLeast
 
-VS Code coding-agent extension whose agent loop runs in TrueForge. The extension starts a loopback MCP server with bounded workspace discovery, file reads, search, context retrieval, staged proposals, approved hunk application and approved command execution.
+**NotTheLeast** is a VS Code AI coding assistant powered by TrueForge. It provides a multi-view coding-agent interface with real-time request lifecycle visibility, inline editing with native diff review, per-hunk approval, safe undo, and TrueForge-powered session orchestration.
 
-## Reproducible local setup
+## Features
 
-Prerequisites: Node.js 22+, VS Code 1.90+, and a locally configured TrueForge server. The tested SDK is `@truefoundry/trueforge-sdk@0.183.0`; the tested MCP SDK is `@modelcontextprotocol/sdk@1.32.2`.
+- **Multi-panel UI**: Five independent VS Code views — Chat, Agent Activity, Tool Execution, Diagnostics, and Context Assembly.
+- **TrueForge agent**: One user request drives a TrueForge agent through its tool loop.
+- **Live request lifecycle**: Real-time stage tracking, elapsed time, inactivity warnings.
+- **Thinking & Tool modes**: Read-only Thinking mode vs. approval-gated Tool mode using the same agent.
+- **Inline editing**: Select code, enter an instruction, review the diff, approve individual hunks.
+- **Native diff review**: VS Code diff editor with per-hunk accept/reject.
+- **Safe undo**: All approved edits can be undone within the session.
+- **File & symbol attachments**: Type `#filename` or `@symbol` to resolve and attach workspace references.
+- **Context Assembly**: Deterministic selection of context blocks and retrieved evidence under a token budget.
+- **Workspace tools**: 8 MCP tools including list, read, search, symbols, retrieve, propose changes, apply hunk, and run command.
+- **Diagnostics & telemetry**: Connection state, token usage, request timing, GPU metrics, structured logs.
+- **VS Code native**: Uses native editor, diff, Webview view, and SecretStorage APIs.
+
+## Prerequisites
+
+- Node.js 22+
+- VS Code 1.90+
+- A locally configured TrueForge server
+
+
+## Installation
+
+1. Clone and install:
+   ```powershell
+   git clone https://github.com/SKParthiv/extension.git
+   cd extension
+   npm ci
+   ```
+
+2. Open in VS Code and press F5 to launch the Extension Development Host.
+
+## TrueForge Setup
+
+1. Start the TrueForge server:
+   ```powershell
+   $env:NETWORK_POLICY_ENABLED = "true"
+   $env:OUTBOUND_URL_ALLOWED_HOSTS = '["localhost","127.0.0.1"]'
+   npx --yes @truefoundry/trueforge@0.185.0
+   ```
+
+2. Set `trueforge.agentName` in VS Code settings to `trueforge-extension-agent`.
+
+3. Run `NotTheLeast: Copy MCP Connector Credentials` from the command palette.
+
+4. Bootstrap:
+   ```powershell
+   node scripts/bootstrap-trueforge.mjs
+   ```
+
+5. Reload and click the **NotTheLeast** Activity Bar icon.
+
+## User Guide
+
+### Views
+- **Chat**: Send prompts, view streaming responses, approve tool calls.
+- **Agent Activity**: Live agent timeline.
+- **Tool Execution**: Tool requests, approvals, results.
+- **Diagnostics**: Status, timing, token usage, GPU metrics, log export.
+- **Context Assembly**: Evidence selection and budget visibility.
+
+### Chat Workflow
+- `Ctrl+Enter` sends a prompt.
+- `#file` and `@symbol` attach workspace references.
+- Approve/deny tool calls in approval cards.
+
+### Inline Edit
+Select code → `Ctrl+Alt+I` → enter instruction → review diff → approve hunks.
+
+### Modes
+- **Thinking**: Read-only. Agent inspects but cannot modify.
+- **Tool**: Full agent with approval-gated mutations.
+
+## Development
 
 ```powershell
-npm ci
-$env:NETWORK_POLICY_ENABLED = "true"
-$env:OUTBOUND_URL_ALLOWED_HOSTS = '["localhost","127.0.0.1"]'
-npx --yes @truefoundry/trueforge@0.183.0
+npm test          # Run all tests
+npx tsc --noEmit  # Type-check
+npm run build     # Build extension and webview
 ```
 
-Open a workspace in VS Code and set `trueforge.agentName` to `trueforge-extension-agent`. The extension binds its MCP endpoint to `127.0.0.1:8765` by default, stores its bearer token in VS Code SecretStorage, and does not print the token. If port 8765 is occupied, set `trueforge.mcpPort` before activation; it will not silently change ports.
+## Documentation
 
-After activation, run `TrueForge: Copy MCP Connector Credentials` from the command palette. This copies the loopback URL and bearer token as a one-time user-directed setup action; the token remains in VS Code SecretStorage and is never logged. Then register the connector and saved agent with the verified SDK:
+- [Architecture](docs/ARCHITECTURE.md)
+- [PS Requirements](docs/PS_REQUIREMENTS.md)
+- [Inline Edit](docs/INLINE_EDIT_FLOW.md)
 
-```powershell
-$env:TRUEFORGE_CONNECTOR_URL = "http://127.0.0.1:8765/mcp"
-$env:TRUEFORGE_MCP_TOKEN = "<token from VS Code SecretStorage setup flow>"
-$env:TRUEFORGE_MODEL = "<model FQN already listed by TrueForge>"
-node scripts/bootstrap-trueforge.mjs
-```
+## License
 
-The script uses the documented `settings.mcpServers.createOrUpdate`, `models.list`, `agents.list`, `agents.create` and `agents.update` SDK methods, followed by post-creation assertions validating all 8 tools, approval triggers for `apply_hunk` and `run_command`, iteration limit, and attached connector. It fails if the model is missing and is idempotent for both connector and agent resources. No provider client or cloud fallback is embedded in the extension.
-
-Proposals use stable diff hunks, allowing per-hunk review and approval directly in the Webview with native VS Code diff review. Applied edits are registered in the SafeUndo service and undoable on demand.
-
-Run the local checks with:
-
-```powershell
-npm test
-npx tsc --noEmit
-npm run build
-```
-
-The MCP transport is intentionally stateless: every HTTP request receives a fresh SDK server and `StreamableHTTPServerTransport`, while workspace services and staged proposals remain extension-owned. This avoids reusing a transport across independent requests and is covered by repeated initialization, tool discovery and invocation tests. TrueForge, the configured model and the connector remain separate resources; the saved agent attaches the connector and each application session maps to its own TrueForge session.
-
-This repository is original work from scratch and does not fork an upstream editor project.
-
+MIT

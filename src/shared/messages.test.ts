@@ -3,7 +3,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "./mes
 
 describe("message bridge contracts", () => {
   it("accepts only the declared bridge shapes", () => {
-    const inbound = { type: "ready" } satisfies WebviewToExtensionMessage
+    const inbound = { type: "ready", viewId: "chat" } satisfies WebviewToExtensionMessage
     const outbound = { type: "runtimeStatus", status: "idle" } satisfies ExtensionToWebviewMessage
 
     expect(inbound.type).toBe("ready")

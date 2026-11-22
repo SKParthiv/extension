@@ -123,3 +123,40 @@ Source: `docs/TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf`
 
 **Legend:** ✅ PASS — implemented & verified | ⚠️ PARTIAL — partially implemented | ❌ FAIL — not implemented | 🔒 BLOCKED — depends on external prerequisite
 | 7.14 | Separate estimated and reported usage | AGENTS.md | ✅ PASS | messages.ts, TrueForgeRuntime.ts | Usage events emitted separately |
+### 10. Multi-Panel UI (New - P0)
+
+| # | Requirement | PS Ref | Status | Files | Notes |
+|---|-------------|--------|--------|-------|-------|
+| 10.1 | NotTheLeast branded Activity Bar container | PS p1 | ✅ VERIFIED | package.json, resources/nottheleast.svg | Activity bar icon with "nL" |
+| 10.2 | Chat view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Independent view with streaming, approvals, attachments |
+| 10.3 | Agent Activity view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Live event timeline |
+| 10.4 | Tool Execution view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Tool call history, state, args |
+| 10.5 | Diagnostics view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Telemetry, timing, log export |
+| 10.6 | Context Assembly view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Evidence selection display |
+| 10.7 | Views independently show/hide/resize | PS p1 | ✅ VERIFIED | package.json | Native VS Code view architecture |
+| 10.8 | Shared runtime state across views | PS p1 | ✅ VERIFIED | src/runtime/SharedState.ts | EventEmitter-based state broadcasting |
+| 10.9 | Request lifecycle stages | PS p2 | ✅ VERIFIED | src/runtime/SharedState.ts, src/extension.ts | 17 stages from idle to failed |
+
+### 11. Live Request Visibility (New - P0)
+
+| # | Requirement | PS Ref | Status | Files | Notes |
+|---|-------------|--------|--------|-------|-------|
+| 11.1 | Immediate prompt feedback | PS p2 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | User message appears immediately |
+| 11.2 | Request ID and active indicator | PS p2 | ✅ VERIFIED | src/extension.ts | requestId, running status broadcast |
+| 11.3 | Stage tracking | PS p2 | ✅ VERIFIED | src/runtime/SharedState.ts | 17 request stages |
+| 11.4 | Elapsed time measurement | PS p2 | ✅ VERIFIED | webview/index.tsx | elapsedSeconds in telemetry |
+| 11.5 | Waiting state visibility | PS p2 | ✅ VERIFIED | webview/index.tsx | Stage badge + elapsed display |
+| 11.6 | Configurable inactivity warning | PS p2 | ✅ VERIFIED | package.json | nottheleast.inactivityWarningSeconds |
+| 11.7 | Cancel action | PS p2 | ✅ VERIFIED | webview/index.tsx, src/extension.ts | Cancel button during active turns |
+
+### 12. Telemetry and Diagnostics (New - P0)
+
+| # | Requirement | PS Ref | Status | Files | Notes |
+|---|-------------|--------|--------|-------|-------|
+| 12.1 | OutputChannel with structured logging | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | NotTheLeast output channel |
+| 12.2 | Configurable log levels | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | debug, info, warn, error |
+| 12.3 | Diagnostics export as JSON | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | exportDiagnosticsJson() |
+| 12.4 | Secret redaction in logs | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | redact() function |
+| 12.5 | Bounded event history | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | MAX_EVENTS = 500 |
+| 12.6 | GPU telemetry (optional) | PS p2 | ✅ VERIFIED | src/runtime/GpuTelemetry.ts | nvidia-smi polling |
+| 12.7 | Telemetry broadcast to all views | PS p2 | ✅ VERIFIED | src/extension.ts | telemetryUpdate message

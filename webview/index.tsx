@@ -1,375 +1,193 @@
-import React, { useEffect, useState } from "react"
+﻿import React, { useEffect, useState, useRef } from "react"
 import { createRoot } from "react-dom/client"
-import type { ExtensionToWebviewMessage } from "../src/shared/messages"
+import type { ExtensionToWebviewMessage, ActivityEntry, ToolExecutionInfo, TelemetryData } from "../src/shared/messages"
 import "./styles.css"
 
-type RuntimeStatus = "disconnected" | "idle" | "running"
-
-declare function acquireVsCodeApi(): {
-  postMessage(message: unknown): void
-}
-
+declare function acquireVsCodeApi(): { postMessage(m: unknown): void }
 const vscode = acquireVsCodeApi()
+const rootEl = document.getElementById("root")
+const currentView = rootEl?.getAttribute("data-view") ?? "chat"
 
-function App(): React.JSX.Element {
-  const [status, setStatus] = useState<RuntimeStatus>("disconnected")
-  const [snapshot, setSnapshot] = useState<Extract<ExtensionToWebviewMessage, { type: "contextSnapshot" }>>()
-  const [error, setError] = useState<string>()
-  const [connection, setConnection] = useState<"disconnected" | "connected" | "degraded">("disconnected")
+type S = "disconnected" | "idle" | "running"
+
+function ChatView() {
+  const [status, setStatus] = useState<S>("disconnected")
+  const [conn, setConn] = useState<string>("disconnected")
+  const [snap, setSnap] = useState<any>()
+  const [err, setErr] = useState<string>()
   const [prompt, setPrompt] = useState("")
-  const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([])
-  const [approvals, setApprovals] = useState<
-    Array<{
-      threadId: string
-      id: string
-      sourceEventId: string
-      toolName?: string
-      arguments?: Record<string, unknown> | string
-    }>
-  >([])
-  const [assembly, setAssembly] = useState<Extract<ExtensionToWebviewMessage, { type: "contextAssembly" }>>()
+  const [msgs, setMsgs] = useState<Array<{role:string;text:string}>>([])
+  const [apps, setApps] = useState<Array<any>>([])
+  const [stage, setStage] = useState("idle")
+  const [tele, setTele] = useState<any>()
+  const [asm, setAsm] = useState<any>()
+  const [att, setAtt] = useState<Array<any>>([])
+  const [aq, setAq] = useState("")
+  const [ar, setAr] = useState<Array<any>>([])
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { ref.current?.scrollIntoView({ behavior: "smooth" }) }, [msgs])
 
   useEffect(() => {
-    const listener = (event: MessageEvent<ExtensionToWebviewMessage>) => {
-      if (event.data.type === "runtimeStatus") {
-        setStatus(event.data.status)
-      } else if (event.data.type === "runtimeConnection") {
-        setConnection(event.data.state)
-      } else if (event.data.type === "userMessage") {
-        setMessages((current) => [...current, { role: "user", text: event.data.text }])
-      } else if (event.data.type === "assistantDelta") {
-        setMessages((current) => {
-          const last = current[current.length - 1]
-          if (!last || last.role !== "assistant") {
-            return [...current, { role: "assistant", text: event.data.text }]
-          }
-          return [...current.slice(0, -1), { ...last, text: last.text + event.data.text }]
-        })
-      } else if (event.data.type === "assistantMessage") {
-        setMessages((current) => {
-          const last = current[current.length - 1]
-          if (!last || last.role !== "assistant") {
-            return [...current, { role: "assistant", text: event.data.text }]
-          }
-          return [...current.slice(0, -1), { ...last, text: event.data.text }]
-        })
-      } else if (event.data.type === "sessionChanged") {
-        setMessages([])
-        setApprovals([])
-        setAssembly(undefined)
-      } else if (event.data.type === "toolApprovalRequired") {
-        setApprovals((current) => [
-          ...current,
-          ...event.data.toolCalls.map((toolCall) => ({
-            threadId: event.data.threadId,
-            id: toolCall.id,
-            sourceEventId: toolCall.sourceEventId,
-            toolName: toolCall.toolName,
-            arguments: toolCall.arguments,
-          })),
-        ])
-      } else if (event.data.type === "contextAssembly") {
-        setAssembly(event.data)
-      } else if (event.data.type === "contextSnapshot") {
-        setSnapshot(event.data)
-        setError(undefined)
-      } else if (event.data.type === "error") {
-        setError(event.data.message)
+    const l = (e: MessageEvent<ExtensionToWebviewMessage>) => {
+      const d = e.data
+      if (d.type === "runtimeStatus") setStatus(d.status)
+      else if (d.type === "runtimeConnection") setConn(d.state)
+      else if (d.type === "userMessage") setMsgs((m) => [...m, { role: "user", text: d.text }])
+      else if (d.type === "assistantDelta") setMsgs((m) => { const last = m[m.length-1]; if (last?.role === "assistant") return [...m.slice(0,-1), {...last, text: last.text + d.text}]; return [...m, {role:"assistant", text: d.text}] })
+      else if (d.type === "assistantMessage") setMsgs((m) => { const last = m[m.length-1]; if (last?.role === "assistant") return [...m.slice(0,-1), {...last, text: d.text}]; return [...m, {role:"assistant", text: d.text}] })
+      else if (d.type === "toolApprovalRequired") setApps((a) => [...a, ...d.toolCalls.map((tc:any) => ({...tc, threadId: d.threadId}))])
+      else if (d.type === "contextAssembly") setAsm(d)
+      else if (d.type === "contextSnapshot") setSnap(d)
+      else if (d.type === "error") setErr(d.message)
+      else if (d.type === "sessionChanged") { setMsgs([]); setApps([]); setAsm(undefined) }
+      else if (d.type === "telemetryUpdate") { setTele(d.data); setStage(d.data.currentStage) }
+      else if (d.type === "attachmentResolved") setAr(d.results)
+      // Final assistant message from turn.done.output — deduplicate against already-streamed text
+      else if (d.type === "assistantFinalMessage") {
+        const last = msgs[msgs.length-1]
+        if (last?.role === "assistant" && last.text.startsWith(d.text)) { /* already streamed, skip */ }
+        else if (last?.role === "assistant") { setMsgs((m:any)=>[...m.slice(0,-1),{...last,text:last.text+d.text}]) }
+        else { setMsgs((m:any)=>[...m,{role:"assistant",text:d.text}]) }
       }
+      else if (d.type === "terminalEventReport") { /* handled by telemetryUpdate */ }
+      else if (d.type === "requestCancelled") { setStatus("idle"); setErr("Request was cancelled: " + d.reason) }
+      else if (d.type === "requestFailed") { setStatus("idle"); setErr(d.errorMessage) }
+      else if (d.type === "turnPaused") { /* paused — keep running status visible via existing stage */ }
+      else if (d.type === "requestCompleted") { /* optional — use telemetryUpdate instead */ }
     }
-    window.addEventListener("message", listener)
-    vscode.postMessage({ type: "ready" })
-    return () => window.removeEventListener("message", listener)
+    window.addEventListener("message", l)
+    vscode.postMessage({ type: "ready", viewId: "chat" })
+    return () => window.removeEventListener("message", l)
   }, [])
 
-  return (
-    <main className="app">
-      <header className="session-header">
-        <span className="eyebrow">TRUEFORGE</span>
-        <strong>Current session</strong>
-        <select
-          aria-label="Active session"
-          value={snapshot?.activeSessionId ?? ""}
-          onChange={(event) => vscode.postMessage({ type: "selectSession", sessionId: event.target.value })}
-        >
-          {snapshot?.sessions.map((session) => (
-            <option key={session.id} value={session.id}>
-              {session.title}
-            </option>
-          )) ?? <option>Loading…</option>}
-        </select>
-      </header>
-      <section className="status-card" aria-live="polite">
-        <span className={`status-dot status-${status}`} />
-        <span>Runtime: {status} ({connection})</span>
-      </section>
-      {error ? <div className="error-banner" role="alert">{error}</div> : null}
-      {assembly ? <AssemblySummary assembly={assembly} /> : null}
-      <ChatPanel
-        status={status}
-        prompt={prompt}
-        messages={messages}
-        onPromptChange={setPrompt}
-        onSend={() => {
-          vscode.postMessage({ type: "sendPrompt", text: prompt })
-          setPrompt("")
-        }}
-        onCancel={() => vscode.postMessage({ type: "cancelTurn" })}
-        onModeChange={(mode) => vscode.postMessage({ type: "setMode", mode })}
-        approvals={approvals}
-        onApproval={(threadId, toolCallId, decision) => {
-          vscode.postMessage({ type: "toolApproval", threadId, toolCallId, decision })
-          setApprovals((current) => current.filter((approval) => approval.id !== toolCallId))
-        }}
-        onReviewDiff={(proposalId, hunkId) => {
-          vscode.postMessage({ type: "reviewDiff", proposalId, hunkId })
-        }}
-      />
-      {snapshot ? (
-        <ContextPanel snapshot={snapshot} onAction={(blockId, action) => vscode.postMessage({ type: "contextAction", blockId, action })} />
-      ) : status === "disconnected" ? (
-        <section className="empty-state">
-          <h1>Ready when you are</h1>
-          <p>Connect TrueForge to start a session and manage context.</p>
-        </section>
-      ) : status === "running" ? (
-        <section className="loading-state" aria-busy="true">
-          <span className="spinner" />
-          <p>Waiting for runtime events…</p>
-        </section>
-      ) : (
-        <section className="empty-state">
-          <h1>No turns yet</h1>
-          <p>Start a turn from the agent panel.</p>
-        </section>
-      )}
-    </main>
+  const send = () => {
+    if (!prompt.trim() || status === "running") return
+    const at = att.length > 0 ? att : undefined
+    vscode.postMessage({ type: "sendPrompt", text: prompt, attachments: at })
+    setAtt([]); setPrompt("")
+  }
+
+  const run = status === "running"
+  const el = tele?.elapsedSeconds ?? 0
+
+  return React.createElement("main", { className: "app" },
+    React.createElement("div", { className: "status-card" },
+      React.createElement("span", { className: `status-dot ${run ? "status-running" : conn === "connected" ? "status-idle" : ""}` }),
+      React.createElement("span", null, run ? `Running (${el}s)` : conn === "connected" ? "Ready" : conn === "degraded" ? "Degraded" : "Disconnected"),
+      stage !== "idle" && React.createElement("span", { className: "muted" }, stage)
+    ),
+    err && React.createElement("div", { className: "error-banner" }, err, React.createElement("button", { onClick: () => setErr(undefined) }, "x")),
+    asm && React.createElement("div", { className: "assembly-summary" }, React.createElement("span", { className: "muted" }, `Context: ${asm.usedTokens}/${asm.budget}`)),
+    React.createElement("section", { className: "chat-messages" }, msgs.length === 0
+      ? React.createElement("div", { className: "empty-state" }, React.createElement("h1", null, "NotTheLeast"), React.createElement("p", null, "Ask me to inspect or change your project."))
+      : msgs.map((m, i) => React.createElement("div", { key: i, className: `chat-message chat-${m.role}` }, React.createElement("span", { className: "message-role" }, m.role === "user" ? "You" : "Assistant"), React.createElement("p", null, m.text)))
+    ),
+    att.length > 0 && React.createElement("div", { className: "attachment-bar" }, att.map((a, i) => React.createElement("span", { key: i, className: "attachment-pill" }, a.label, React.createElement("button", { onClick: () => setAtt((x: any) => x.filter((_: any, j: any) => j !== i)) }, "x")))),
+    React.createElement("input", { className: "attachment-input", placeholder: "#file or @symbol...", value: aq, onChange: (e: any) => { const q = e.target.value; setAq(q); if (q.startsWith("#") || q.startsWith("@")) vscode.postMessage({type:"resolveAttachment", query: q}); else setAr([]) } }),
+    ar.length > 0 && React.createElement("div", { className: "attachment-results" }, ar.map((r, i) => React.createElement("button", { key: i, onClick: () => { setAtt((a:any)=>[...a,r]); setAq(""); setAr([]) } }, r.label))),
+    React.createElement("textarea", { placeholder: "Ask NotTheLeast...", value: prompt, onChange: (e: any) => setPrompt(e.target.value), onKeyDown: (e: any) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send() } }, rows: 3 }),
+    React.createElement("div", { className: "chat-actions" },
+      React.createElement("span", { className: "muted" }, run ? stage : "Ctrl+Enter"),
+      run ? React.createElement("button", { onClick: () => vscode.postMessage({type:"cancelTurn"}) }, "Cancel") : React.createElement("button", { onClick: send, disabled: !prompt.trim() }, "Send")
+    ),
+    apps.map((app: any, i: number) => React.createElement("div", { key: i, className: "approval-card" },
+      React.createElement("strong", null, app.toolName ?? "Tool"),
+      React.createElement("code", null, JSON.stringify(app.arguments).slice(0,200)),
+      React.createElement("div", { className: "approval-actions" },
+        React.createElement("button", { onClick: () => vscode.postMessage({type:"toolApproval",threadId:app.threadId,toolCallId:app.id,decision:"allow"}) }, "Allow"),
+        React.createElement("button", { onClick: () => vscode.postMessage({type:"toolApproval",threadId:app.threadId,toolCallId:app.id,decision:"deny"}) }, "Deny")
+      )
+    ))
   )
 }
 
-function AssemblySummary({
-  assembly,
-}: {
-  assembly: Extract<ExtensionToWebviewMessage, { type: "contextAssembly" }>
-}): React.JSX.Element {
-  return (
-    <section className="assembly-summary" aria-label="Context assembly">
-      <div className="section-heading">
-        <strong>Context assembled</strong>
-        <span className="muted">{assembly.usedTokens}/{assembly.budget} tokens</span>
-      </div>
-      {assembly.selected.length > 0 ? (
-        <div className="assembly-list">
-          {assembly.selected.map((item) => (
-            <span className="assembly-item" key={`selected:${item.title}`}>
-              {item.title} · {item.reason} · {item.tokenEstimate} tok
-            </span>
-          ))}
-        </div>
-      ) : <span className="muted">No session blocks selected.</span>}
-      {assembly.omitted.length > 0 ? (
-        <span className="muted">
-          Omitted for budget: {assembly.omitted.map((item) => item.title).join(", ")}
-        </span>
-      ) : null}
-      {assembly.retrieved.length > 0 ? (
-        <div className="assembly-list">
-          {assembly.retrieved.map((item) => (
-            <span className="assembly-item" key={`retrieved:${item.path}:${item.startLine}`}>
-              {item.path}:{item.startLine}-{item.endLine} · {item.reason}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </section>
+function ActivityView() {
+  const [acts, setActs] = useState<ActivityEntry[]>([])
+  useEffect(() => {
+    const l = (e: MessageEvent<ExtensionToWebviewMessage>) => { if (e.data.type === "activityUpdate") setActs((a) => [e.data.entry, ...a].slice(0,200)) }
+    window.addEventListener("message", l); vscode.postMessage({type:"ready",viewId:"activity"})
+    return () => window.removeEventListener("message", l)
+  }, [])
+  return React.createElement("main", { className: "app" },
+    React.createElement("div", { className: "section-heading" }, React.createElement("span", { className: "eyebrow" }, "NOTTHELEAST"), React.createElement("h2", null, "Agent Activity")),
+    acts.length === 0
+      ? React.createElement("div", { className: "empty-state" }, React.createElement("p", null, "No activity yet."))
+      : React.createElement("div", { className: "activity-list" }, acts.map((e) => React.createElement("div", { key: e.id, className: `activity-item activity-${e.type}` },
+        React.createElement("span", { className: "activity-time" }, new Date(e.timestamp).toLocaleTimeString()),
+        React.createElement("span", { className: `pill type-${e.type}` }, e.type),
+        React.createElement("span", null, e.title)
+      )))
   )
 }
 
-function ChatPanel({
-  status,
-  prompt,
-  messages,
-  onPromptChange,
-  onSend,
-  onCancel,
-  onModeChange,
-  approvals,
-  onApproval,
-  onReviewDiff,
-}: {
-  status: RuntimeStatus
-  prompt: string
-  messages: Array<{ role: "user" | "assistant"; text: string }>
-  onPromptChange: (value: string) => void
-  onSend: () => void
-  onCancel: () => void
-  onModeChange: (mode: "thinking" | "tool") => void
-  approvals: Array<{
-    threadId: string
-    id: string
-    sourceEventId: string
-    toolName?: string
-    arguments?: Record<string, unknown> | string
-  }>
-  onApproval: (threadId: string, toolCallId: string, decision: "allow" | "deny") => void
-  onReviewDiff: (proposalId: string, hunkId?: string) => void
-}): React.JSX.Element {
-  return (
-    <section className="chat-panel" aria-label="TrueForge agent chat">
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">AGENT CHAT</span>
-          <h2>Prompt TrueForge</h2>
-        </div>
-        <select aria-label="Runtime mode" defaultValue="thinking" onChange={(event) => onModeChange(event.target.value as "thinking" | "tool")}>
-          <option value="thinking">Thinking</option>
-          <option value="tool">Tool</option>
-        </select>
-      </div>
-      <div className="chat-messages" aria-live="polite">
-        {messages.length === 0 ? <p className="muted">No messages yet. Configure an agent, then send a prompt.</p> : null}
-        {messages.map((message, index) => (
-          <div className={`chat-message chat-${message.role}`} key={`${message.role}-${index}`}>
-            <strong>{message.role === "user" ? "You" : "TrueForge"}</strong>
-            <p>{message.text}</p>
-          </div>
-        ))}
-      </div>
-      {approvals.length > 0 ? (
-        <div className="approval-list" aria-label="Pending tool approvals">
-          {approvals.map((approval) => {
-            const args = typeof approval.arguments === "object" && approval.arguments !== null
-              ? (approval.arguments as Record<string, unknown>)
-              : {}
-            const isApplyHunk = approval.toolName === "apply_hunk"
-            const isRunCommand = approval.toolName === "run_command"
-            const proposalId = typeof args.proposalId === "string" ? args.proposalId : ""
-            const hunkId = typeof args.hunkId === "string" ? args.hunkId : ""
-            const command = typeof args.command === "string" ? args.command : ""
-
-            return (
-              <div className="approval-card" key={`${approval.threadId}:${approval.id}`}>
-                <div className="approval-card-header">
-                  <strong>Approval required: <code>{approval.toolName || "tool"}</code></strong>
-                </div>
-                {isRunCommand ? (
-                  <div className="approval-details">
-                    <span className="muted">Command: </span>
-                    <code>{command}</code>
-                  </div>
-                ) : null}
-                {isApplyHunk ? (
-                  <div className="approval-details">
-                    <span className="muted">Hunk: </span>
-                    <code>{hunkId || "default"}</code>
-                    {proposalId ? (
-                      <button
-                        type="button"
-                        style={{ marginLeft: "8px", padding: "2px 8px" }}
-                        onClick={() => onReviewDiff(proposalId, hunkId)}
-                      >
-                        Review Diff
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-                <span className="muted">Call ID: {approval.id}</span>
-                <div className="approval-actions">
-                  <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "allow")}>Allow</button>
-                  <button type="button" onClick={() => onApproval(approval.threadId, approval.id, "deny")}>Deny</button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      ) : null}
-      <textarea
-        aria-label="Prompt"
-        placeholder="Ask TrueForge to inspect or change your project…"
-        value={prompt}
-        onChange={(event) => onPromptChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-            event.preventDefault()
-            onSend()
-          }
-        }}
-        rows={4}
-      />
-      <div className="chat-actions">
-        <span className="muted">Ctrl/Cmd+Enter to send</span>
-        {status === "running" ? (
-          <button type="button" onClick={onCancel}>Cancel</button>
-        ) : (
-          <button type="button" onClick={onSend} disabled={!prompt.trim()}>Send</button>
-        )}
-      </div>
-    </section>
+function ToolsView() {
+  const [tools, setTools] = useState<ToolExecutionInfo[]>([])
+  useEffect(() => {
+    const l = (e: MessageEvent<ExtensionToWebviewMessage>) => { if (e.data.type === "toolExecutionUpdate") setTools((t) => [e.data.tool, ...t.filter((x) => x.id !== e.data.tool.id)].slice(0,100)) }
+    window.addEventListener("message", l); vscode.postMessage({type:"ready",viewId:"tools"})
+    return () => window.removeEventListener("message", l)
+  }, [])
+  return React.createElement("main", { className: "app" },
+    React.createElement("div", { className: "section-heading" }, React.createElement("span", { className: "eyebrow" }, "NOTTHELEAST"), React.createElement("h2", null, "Tool Execution")),
+    tools.length === 0
+      ? React.createElement("div", { className: "empty-state" }, React.createElement("p", null, "No tools called yet."))
+      : React.createElement("div", { className: "tool-list" }, tools.map((t) => React.createElement("div", { key: t.id, className: `tool-item tool-${t.state}` },
+        React.createElement("strong", null, t.toolName || "Tool"),
+        React.createElement("span", { className: `pill state-${t.state}` }, t.state),
+        t.arguments && React.createElement("code", null, JSON.stringify(t.arguments).slice(0,200)),
+        t.error && React.createElement("div", { className: "error-banner" }, t.error)
+      )))
   )
 }
 
-function ContextPanel({
-  snapshot,
-  onAction,
-}: {
-  snapshot: Extract<ExtensionToWebviewMessage, { type: "contextSnapshot" }>
-  onAction: (blockId: string, action: "store" | "attach") => void
-}): React.JSX.Element {
-  return (
-    <section className="context-panel" aria-label="Context Manager">
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">CONTEXT MANAGER</span>
-          <h2>Session context</h2>
-        </div>
-        <span className="token-count">{snapshot.blocks.reduce((sum, item) => sum + item.tokenEstimate, 0)} tokens</span>
-      </div>
-      {snapshot.blocks.length === 0 ? (
-        <p className="muted">No context blocks attached.</p>
-      ) : (
-        <div className="context-list">
-          {snapshot.blocks.map((block) => (
-            <article className="context-item" key={block.id}>
-              <div className="context-item-header">
-                <strong>{block.title}</strong>
-                <span className={`pill status-${block.status}`}>{block.status}</span>
-              </div>
-              <p>{block.content}</p>
-              <div className="context-meta">
-                <span>{block.scope}</span>
-                <span>{block.priority ?? "unprioritized"}</span>
-                <span>{block.tokenEstimate} tok</span>
-                {block.pinned ? <span>pinned</span> : null}
-                {block.locked ? <span>locked</span> : null}
-              </div>
-              <div className="context-actions">
-                <button type="button" onClick={() => onAction(block.id, "store")} disabled={block.locked}>
-                  Store
-                </button>
-                <button type="button" onClick={() => onAction(block.id, "attach")}>
-                  Re-attach
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-      {snapshot.conflicts.length > 0 ? (
-        <div className="conflict-banner" role="status">
-          <strong>{snapshot.conflicts.length} possible conflict{snapshot.conflicts.length === 1 ? "" : "s"}</strong>
-          {snapshot.conflicts.map((conflict) => (
-            <span key={`${conflict.key}:${conflict.leftTitle}:${conflict.rightTitle}`}>
-              {conflict.key}: {conflict.leftTitle} / {conflict.rightTitle}
-            </span>
-          ))}
-        </div>
-      ) : null}
-      <div className="library-summary">
-        <strong>Context Library</strong>
-        <span>{snapshot.library.length} reusable block{snapshot.library.length === 1 ? "" : "s"}</span>
-      </div>
-    </section>
+function DiagnosticsView() {
+  const [tele, setTele] = useState<TelemetryData>()
+  useEffect(() => {
+    const l = (e: MessageEvent<ExtensionToWebviewMessage>) => { if (e.data.type === "telemetryUpdate") setTele(e.data.data) }
+    window.addEventListener("message", l); vscode.postMessage({type:"ready",viewId:"diagnostics"})
+    return () => window.removeEventListener("message", l)
+  }, [])
+  return React.createElement("main", { className: "app" },
+    React.createElement("div", { className: "section-heading" }, React.createElement("span", { className: "eyebrow" }, "NOTTHELEAST"), React.createElement("h2", null, "Diagnostics")),
+    React.createElement("button", { onClick: () => vscode.postMessage({type:"exportDiagnostics"}) }, "Copy Report"),
+    tele && React.createElement("div", { className: "diagnostics-card" },
+      React.createElement("h3", null, "Status"),
+      React.createElement("table", { className: "diag-table" }, React.createElement("tbody", null,
+        [["Connection",tele.connectionState],["Stage",tele.currentStage],["Input Tokens",tele.inputTokens],["Output Tokens",tele.outputTokens],["Errors",tele.errors],["Requests",tele.requestCount]].map(([k,v]) => React.createElement("tr", { key: k as string }, React.createElement("td", null, k as string), React.createElement("td", null, String(v))))
+      ))
+    )
   )
 }
 
-createRoot(document.getElementById("root")!).render(<App />)
+function ContextView() {
+  const [asm, setAsm] = useState<any>()
+  useEffect(() => {
+    const l = (e: MessageEvent<ExtensionToWebviewMessage>) => { if (e.data.type === "contextAssembly") setAsm(e.data) }
+    window.addEventListener("message", l); vscode.postMessage({type:"ready",viewId:"context"})
+    return () => window.removeEventListener("message", l)
+  }, [])
+  return React.createElement("main", { className: "app" },
+    React.createElement("div", { className: "section-heading" }, React.createElement("span", { className: "eyebrow" }, "NOTTHELEAST"), React.createElement("h2", null, "Context Assembly")),
+    !asm
+      ? React.createElement("div", { className: "empty-state" }, React.createElement("p", null, "Send a prompt to see context."))
+      : React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "assembly-summary" }, React.createElement("span", null, `Budget: ${asm.budget}`), React.createElement("span", null, `Used: ${asm.usedTokens}`)),
+        asm.selected?.map((item: any, i: number) => React.createElement("div", { key: i }, React.createElement("strong", null, item.title), ` ${item.tokenEstimate} tok (${item.reason})`)),
+        asm.omitted?.length > 0 && React.createElement("div", { className: "muted" }, `${asm.omitted.length} blocks omitted`),
+        asm.retrieved?.map((item: any, i: number) => React.createElement("div", { key: i }, React.createElement("strong", null, item.path), `:${item.startLine}-${item.endLine}`))
+      )
+  )
+}
+
+function App() {
+  switch (currentView) {
+    case "activity": return React.createElement(ActivityView)
+    case "tools": return React.createElement(ToolsView)
+    case "diagnostics": return React.createElement(DiagnosticsView)
+    case "context": return React.createElement(ContextView)
+    default: return React.createElement(ChatView)
+  }
+}
+
+createRoot(document.getElementById("root")!).render(React.createElement(App))

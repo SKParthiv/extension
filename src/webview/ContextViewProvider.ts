@@ -268,8 +268,30 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
         })),
       })
     } else if (event.type === "turn.done") {
+      const state = (event as any).state
+      // Extract assistant text from terminal output — this fixes the case where no deltas were streamed but final output exists
+      function extractOutput(): { text: string; reasoning?: string } | null {
+        if (state.status !== "done") return null
+        const out = state.output
+        if (!out || out.type !== "model.message") return null
+        const content = out.content ?? ""
+        let txt = typeof content === "string" ? content : Array.isArray(content) ? content.map((p: any) => ("text" in p ? p.text : "")).join("") : ""
+        return { text: txt, reasoning: out.reasoningContent }
+      }
+      const termOut = extractOutput()
       if (!eventAppSessionId || eventAppSessionId === this.activeSessionId) {
-        await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+        if (termOut && termOut.text.length > 0) {
+          // Terminal has output - send through assistant message pipeline even if no deltas arrived
+          await this.webview?.postMessage({ type: "assistantFinalMessage", text: termOut.text, reasoning: termOut.reasoning })
+        } else if (state.status === "error") {
+          const errMsg = state.message || "Unknown error during turn."
+          await this.webview?.postMessage({ type: "error", message: errMsg })
+        } else if (state.status === "cancelled") {
+          // Show cancellation reason without fabricating failure
+        } else {
+          // Done but no output - explicit diagnostic, not silent failure
+          await this.webview?.postMessage({ type: "runtimeStatus", status: "idle" })
+        }
       }
     } else if (event.type === "error") {
       await this.webview?.postMessage({ type: "error", message: event.message })

@@ -5,17 +5,16 @@
 ## Features
 
 - **Multi-panel UI**: Five independent VS Code views — Chat, Agent Activity, Tool Execution, Diagnostics, and Context Assembly.
-- **TrueForge agent**: One user request drives a TrueForge agent through its tool loop.
-- **Live request lifecycle**: Real-time stage tracking, elapsed time, inactivity warnings.
-- **Thinking & Tool modes**: Read-only Thinking mode vs. approval-gated Tool mode using the same agent.
-- **Inline editing**: Select code, enter an instruction, review the diff, approve individual hunks.
-- **Native diff review**: VS Code diff editor with per-hunk accept/reject.
-- **Safe undo**: All approved edits can be undone within the session.
-- **File & symbol attachments**: Type `#filename` or `@symbol` to resolve and attach workspace references.
-- **Context Assembly**: Deterministic selection of context blocks and retrieved evidence under a token budget.
-- **Workspace tools**: 8 MCP tools including list, read, search, symbols, retrieve, propose changes, apply hunk, and run command.
-- **Diagnostics & telemetry**: Connection state, token usage, request timing, GPU metrics, structured logs.
-- **VS Code native**: Uses native editor, diff, Webview view, and SecretStorage APIs.
+  - **TrueForge agent**: One user request drives a TrueForge agent through its tool loop.
+  - **Live request lifecycle**: Real-time stage tracking, elapsed time, inactivity warnings.
+  - **Thinking & Tool modes**: Read-only Thinking mode vs. approval-gated Tool mode using the same agent.
+  - **Inline editing**: Select code, enter an instruction, review the diff, approve individual hunks.
+  - **Native diff review**: VS Code diff editor with per-hunk accept/reject.
+  - **Safe undo**: All approved edits can be undone within the session.
+  - **Context Assembly**: Deterministic selection of context blocks and retrieved evidence under a token budget.
+  - **Workspace tools**: 8 MCP tools including list, read, search, symbols, retrieve, propose changes, apply hunk, and run command.
+  - **Diagnostics & telemetry**: Connection state, token usage, request timing, GPU metrics, structured logs.
+  - **VS Code native**: Uses native editor, diff, Webview view, and SecretStorage APIs.
 
 ## Prerequisites
 
@@ -66,7 +65,6 @@
 
 ### Chat Workflow
 - `Ctrl+Enter` sends a prompt.
-- `#file` and `@symbol` attach workspace references.
 - Approve/deny tool calls in approval cards.
 
 ### Inline Edit

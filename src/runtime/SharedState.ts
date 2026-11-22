@@ -86,6 +86,11 @@ export class SharedRuntimeState {
     this._running = stage !== "idle" && stage !== "completed" && stage !== "cancelled" && stage !== "failed"
     this.recordActivity("stage_change", "Stage: " + stage); this.emitState()
   }
+  /** Explicitly sets running state. Used to ensure UI reflects running/idle before stage transitions. */
+  public setRunning(running: boolean): void {
+    this._running = running
+    this.emitState()
+  }
   public setModelName(n: string | undefined): void { this._modelName = n; this.emitState() }
 
   /**

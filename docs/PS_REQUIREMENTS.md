@@ -21,17 +21,17 @@ Source: `docs/TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf`
 
 | # | Requirement | PS Ref | Status | Files | Notes |
 |---|-------------|--------|--------|-------|-------|
-| 2.1 | Panel where a single request drives a TrueForge agent through a tool loop | PS p2 §2 | ✅ PASS | `src/runtime/TrueForgeRuntime.ts`, `src/webview/ContextViewProvider.ts` | Sends user prompt, streams events, handles tool approvals |
+| 2.1 | Panel where a single request drives a TrueForge agent through a tool loop | PS p2 §2 | ⚠️ PARTIAL | `src/runtime/TrueForgeRuntime.ts`, `src/runtime/NotTheLeastController.ts` | Events stream, but live chat path had broken formatter — end-to-end not yet verified |
 | 2.2 | Agent reads file, searches, writes file, runs terminal command | PS p2 §2 | ✅ PASS | `src/mcp/WorkspaceTools.ts`, `src/mcp/McpServer.ts` | 8 MCP tools: list_workspace, read_file, search_workspace, get_symbols, retrieve_context, propose_changes, apply_hunk, run_command |
-| 2.3 | Must carry out change spanning at least 3 files without user naming them | PS p2 §2 | ✅ PASS | `src/mcp/WorkspaceTools.ts` (all tools), `src/mcp/McpServer.ts` | Agent can discover files via search_workspace/get_symbols/list_workspace |
+| 2.3 | Must carry out change spanning at least 3 files without user naming them | PS p2 §2 | ❌ FAIL | `src/mcp/WorkspaceTools.ts`, `src/mcp/McpServer.ts` | Tools exist but end-to-end Flask task B not verified |
 | 2.4 | Finding files is the agent's job | PS p2 §2 | ✅ PASS | Architecture | Via MCP read/list/search tools |
 | 2.5 | Flask task demonstration | PS p8-9 | ⚠️ PARTIAL | External | Requires configured TrueForge agent and model |
 ### 3. Context Assembly (PS p2-3)
 
 | # | Requirement | PS Ref | Status | Files | Notes |
 |---|-------------|--------|--------|-------|-------|
-| 3.1 | Explicit @file and @symbol mentions | PS p2 §3 | ⚠️ PARTIAL | `src/context/ContextService.ts`, `src/shared/messages.ts` | Types defined but @file/@symbol resolution not fully wired in webview |
-| 3.2 | Automatic retrieval of relevant code | PS p2 §3 | ✅ PASS | `src/context/LocalRetriever.ts`, `src/context/ContextAssembler.ts` | Token-based retrieval with bounded results |
+| 3.1 | Explicit @file and @symbol mentions | PS p2 §3 | ❌ FAIL | `src/shared/messages.ts`, `webview/index.tsx` | Attachment picker UI disabled — no prompt injection of selected references |
+| 3.2 | Automatic retrieval of relevant code | PS p2 §3 | ⚠️ PARTIAL | `src/context/LocalRetriever.ts`, `src/context/ContextAssembler.ts`, `src/runtime/NotTheLeastController.ts` | Runtime now loads workspace files, but end-to-end retrieval path not verified |
 | 3.3 | Deterministic selection under token budget | PS p2 §3 | ✅ PASS | `src/context/ContextSelector.ts`, `src/context/ContextAssembler.ts` | Pinned > Priority > Position > ID |
 | 3.4 | Visible selected files, reasons and budget | PS p2 §3 | ⚠️ PARTIAL | `src/shared/messages.ts` (contextAssembly message) | Types defined but webview rendering incomplete |
 | 3.5 | Conflict detection without silent rewrite | PS p2 §3 | ✅ PASS | `src/context/ContextConflicts.ts` | `key: value` directive comparison |
@@ -50,7 +50,7 @@ Source: `docs/TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf`
 
 | # | Requirement | PS Ref | Status | Files | Notes |
 |---|-------------|--------|--------|-------|-------|
-| 5.1 | Tokens appear as they arrive | PS p2 §5 | ✅ PASS | `src/runtime/TrueForgeRuntime.ts` (model.message.delta) | Streams delta events through TrueForge |
+| 5.1 | Tokens appear as they arrive | PS p2 §5 | ⚠️ PARTIAL | `src/runtime/TrueForgeRuntime.ts` (model.message.delta), `src/runtime/NotTheLeastController.ts` (onRuntimeEvent) | Delta events emitted but end-to-end webview rendering not verified |
 | 5.2 | User can interrupt generation mid-flight | PS p2 §5 | ✅ PASS | `src/runtime/TrueForgeRuntime.ts` (cancel), `src/webview/ContextViewProvider.ts` (cancelTurn) | Cancels via TrueForge session cancel API |
 | 5.3 | Editor never blocks | PS p2 §5 | ✅ PASS | `src/runtime/TrueForgeRuntime.ts` (async stream consumption) | Non-blocking async iteration |
 | 5.4 | No half-applied edits after cancellation | PS p2 §5 | ✅ PASS | `src/edits/EditProposal.ts`, `src/edits/InlineEditFlow.ts` | Edits are non-mutating until explicitly applied |
@@ -114,10 +114,10 @@ Source: `docs/TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf`
 | Agent Mode | 5 | 4 | 1 | 0 | 0 |
 | Context Assembly | 5 | 3 | 2 | 0 | 0 |
 | Diff Review | 5 | 5 | 0 | 0 | 0 |
-| Streaming/Cancel | 4 | 4 | 0 | 0 | 0 |
+| Streaming/Cancel | 4 | 3 | 1 | 0 | 0 |
 | Architecture | 14 | 14 | 0 | 0 | 0 |
 | Security | 7 | 7 | 0 | 0 | 0 |
-| **Core PS Total** | **47** | **44** | **3** | **0** | **0** |
+| **Core PS Total** | **47** | **40** | **5** | **2** | **0** |
 | Flask Tasks | 4 | 0 | 1 | 3 | 0 |
 | Not Yet Complete | 9 | 0 | 2 | 7 | 0 |
 
@@ -128,7 +128,7 @@ Source: `docs/TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf`
 | # | Requirement | PS Ref | Status | Files | Notes |
 |---|-------------|--------|--------|-------|-------|
 | 10.1 | NotTheLeast branded Activity Bar container | PS p1 | ✅ VERIFIED | package.json, resources/nottheleast.svg | Activity bar icon with "nL" |
-| 10.2 | Chat view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Independent view with streaming, approvals, attachments |
+| 10.2 | Chat view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Independent view with streaming and approvals; attachment picker disabled |
 | 10.3 | Agent Activity view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Live event timeline |
 | 10.4 | Tool Execution view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Tool call history, state, args |
 | 10.5 | Diagnostics view | PS p1 | ✅ VERIFIED | src/extension.ts, webview/index.tsx | Telemetry, timing, log export |
@@ -155,7 +155,7 @@ Source: `docs/TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf`
 |---|-------------|--------|--------|-------|-------|
 | 12.1 | OutputChannel with structured logging | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | NotTheLeast output channel |
 | 12.2 | Configurable log levels | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | debug, info, warn, error |
-| 12.3 | Diagnostics export as JSON | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | exportDiagnosticsJson() |
+| 12.3 | Diagnostics export as JSON | PS p2 | ✅ PASS | src/runtime/NotTheLeastLogger.ts, src/runtime/NotTheLeastController.ts | exportDiagnosticsJson() with clipboard copy via handleExportDiagnostics() |
 | 12.4 | Secret redaction in logs | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | redact() function |
 | 12.5 | Bounded event history | PS p2 | ✅ VERIFIED | src/runtime/NotTheLeastLogger.ts | MAX_EVENTS = 500 |
 | 12.6 | GPU telemetry (optional) | PS p2 | ✅ VERIFIED | src/runtime/GpuTelemetry.ts | nvidia-smi polling |

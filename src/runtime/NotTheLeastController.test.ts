@@ -15,6 +15,12 @@ vi.mock("vscode", () => {
   class Disposable {
     constructor(readonly dispose: () => void) {}
   }
+  const mockOutputChannel = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }
   return {
     Disposable,
     EventEmitter: class {
@@ -27,6 +33,7 @@ vi.mock("vscode", () => {
     },
     window: {
       showErrorMessage: vi.fn(),
+      createOutputChannel: vi.fn(() => mockOutputChannel),
     },
     Uri: {
       joinPath: vi.fn((base: any, ...segments: string[]) => ({ fsPath: `${base?.fsPath ?? ""}/${segments.join("/")}` })),
@@ -76,7 +83,7 @@ function createMockWebviewView(): MockWebviewView & { triggerReceiveMessage(msg:
   })
 }
 
-function makeController(): NotTheLeastController {
+function makeController(): any {
   return new (NotTheLeastController as any)()
 }
 
@@ -362,87 +369,128 @@ describe("GenericViewProvider snapshot restoration via webview lifecycle", () =>
 
 // ── Session persistence tests (integration with ContextDatabase) ──
 
-describe("Application session persistence", () => {
-  it("creates a session in the database and reads it back", async () => {
+describe("NotTheLeastController — ensureSession controller-level tests", () => {
+  let database: any
+  let service: any
+
+  beforeEach(async () => {
     const { ContextDatabase } = await import("../context/db/Database.js")
     const { ContextService } = await import("../context/ContextService.js")
-    const database = await ContextDatabase.open()
-    try {
-      const service = new ContextService(database)
-      const session = await service.createSession("Test Session")
-
-      expect(session.id).toMatch(/^s-\d+$/)
-      expect(session.title).toBe("Test Session")
-      expect(session.trueforgeSessionId).toBeNull()
-      expect(session.createdAt).toBeDefined()
-      expect(session.updatedAt).toBeDefined()
-
-      const sessions = service.listSessions()
-      expect(sessions).toHaveLength(1)
-      expect(sessions[0].id).toBe(session.id)
-    } finally {
-      database.close()
-    }
+    database = await ContextDatabase.open()
+    service = new ContextService(database)
   })
 
-  it("persists the TrueForge session ID mapping", async () => {
-    const { ContextDatabase } = await import("../context/db/Database.js")
-    const { ContextService } = await import("../context/ContextService.js")
-    const database = await ContextDatabase.open()
-    try {
-      const service = new ContextService(database)
-      const session = await service.createSession("Agent Session")
-      expect(session.trueforgeSessionId).toBeNull()
-
-      await service.setTrueForgeSessionId(session.id, "tf-session-42")
-      const sessions = service.listSessions()
-      expect(sessions[0].trueforgeSessionId).toBe("tf-session-42")
-    } finally {
-      database.close()
-    }
+  afterEach(async () => {
+    if (database) database.close()
   })
 
-  it("requires an existing session before creating context blocks", async () => {
-    const { ContextDatabase } = await import("../context/db/Database.js")
-    const { ContextService } = await import("../context/ContextService.js")
-    const database = await ContextDatabase.open()
-    try {
-      const service = new ContextService(database)
-      const session = await service.createSession("Sesh")
-      const block = await service.create({
-        sessionId: session.id,
-        title: "Block",
-        content: "Content",
-        sourceType: "user",
-        provenance: "test",
-      })
-      expect(block.id).toBeDefined()
-    } finally {
-      database.close()
+  function makeSessionTestController(runtimeMock?: {
+    createSession: ReturnType<typeof vi.fn>
+  }): any {
+    const ctrl = makeController()
+    ctrl.service = service
+    if (runtimeMock) {
+      ctrl.runtime = runtimeMock
     }
+    return ctrl
+  }
+
+  it("Runtime creation fails once, then succeeds — exactly one app-session row, two runtime creation attempts", async () => {
+    const runtimeCreate = vi.fn()
+    runtimeCreate.mockRejectedValueOnce(new Error("network error"))
+    runtimeCreate.mockResolvedValueOnce({ id: "tf-session-retry" })
+
+    const ctrl = makeSessionTestController({ createSession: runtimeCreate })
+
+    const result1 = await ctrl.ensureSession()
+    expect(result1).toBeUndefined()
+    expect(ctrl.activeSessionId).toBeUndefined()
+    expect(ctrl.pendingAppSessionId).toMatch(/^s-/)
+    expect(ctrl.pendingRuntimeSessionId).toBeUndefined()
+    expect(service.listSessions()).toHaveLength(1)
+
+    const result2 = await ctrl.ensureSession()
+    expect(result2).toBe(ctrl.activeSessionId)
+    expect(runtimeCreate).toHaveBeenCalledTimes(2)
+    expect(service.listSessions()).toHaveLength(1)
+    const sessions = service.listSessions()
+    expect(sessions[0].trueforgeSessionId).toBe("tf-session-retry")
+    expect(ctrl.pendingAppSessionId).toBeUndefined()
+    expect(ctrl.pendingRuntimeSessionId).toBeUndefined()
   })
 
-  it("does not create duplicate application sessions on runtime creation failure", async () => {
-    const { ContextDatabase } = await import("../context/db/Database.js")
-    const { ContextService } = await import("../context/ContextService.js")
-    const database = await ContextDatabase.open()
-    const service = new ContextService(database)
+  it("Mapping persistence fails once, then succeeds — runtime created exactly once", async () => {
+    const runtimeCreate = vi.fn().mockResolvedValue({ id: "tf-session-map-retry" })
 
-    try {
-      await service.createSession("Agent Session")
-      expect(service.listSessions()).toHaveLength(1)
+    service.setTrueForgeSessionId = vi.fn()
+    service.setTrueForgeSessionId
+      .mockRejectedValueOnce(new Error("mapping persist failure"))
+      .mockResolvedValueOnce(undefined)
 
-      // ensureSession checks runtimeSessionIds map FIRST, so on retry
-      // within the same process no duplicate is created.
-      // Documenting: across restarts the in-memory map is lost and a new
-      // app session is created. This is acceptable for MVP.
-      expect(service.listSessions()).toHaveLength(1)
-    } finally {
-      database.close()
-    }
+    const ctrl = makeSessionTestController({ createSession: runtimeCreate })
+
+    const result1 = await ctrl.ensureSession()
+    expect(result1).toBeUndefined()
+    expect(service.listSessions()).toHaveLength(1)
+    expect(ctrl.pendingAppSessionId).toBeDefined()
+    expect(ctrl.pendingRuntimeSessionId).toBe("tf-session-map-retry")
+    expect(runtimeCreate).toHaveBeenCalledTimes(1)
+    expect(ctrl.activeSessionId).toBeUndefined()
+
+    const result2 = await ctrl.ensureSession()
+    expect(result2).toBeDefined()
+    expect(result2).toBe(ctrl.activeSessionId)
+    expect(runtimeCreate).toHaveBeenCalledTimes(1)
+    expect(service.listSessions()).toHaveLength(1)
+    expect(service.setTrueForgeSessionId).toHaveBeenCalledTimes(2)
+    expect(ctrl.pendingAppSessionId).toBeUndefined()
+    expect(ctrl.pendingRuntimeSessionId).toBeUndefined()
+  })
+
+it("Fully initialized session reused — no additional database session or runtime creation", async () => {
+    const runtimeCreate = vi.fn().mockResolvedValue({ id: "tf-session-reuse" })
+    const ctrl = makeSessionTestController({ createSession: runtimeCreate })
+
+    const result1 = await ctrl.ensureSession()
+    expect(result1).toBeDefined()
+    expect(ctrl.activeSessionId).toBe(result1)
+    expect(runtimeCreate).toHaveBeenCalledTimes(1)
+
+    const result2 = await ctrl.ensureSession()
+    expect(result2).toBe(result1)
+    expect(runtimeCreate).toHaveBeenCalledTimes(1)
+    expect(service.listSessions()).toHaveLength(1)
+    const sessions = service.listSessions()
+    expect(sessions[0].trueforgeSessionId).toBe("tf-session-reuse")
+  })
+
+  it("Context database unavailable — no runtime session created and no active session published", async () => {
+    const runtimeCreate = vi.fn().mockResolvedValue({ id: "tf-session-no-db" })
+    const ctrl = makeController()
+    ctrl.runtime = { createSession: runtimeCreate }
+
+    const result = await ctrl.ensureSession()
+    expect(result).toBeUndefined()
+    expect(runtimeCreate).not.toHaveBeenCalled()
+    expect(ctrl.activeSessionId).toBeUndefined()
+    expect(ctrl.pendingAppSessionId).toBeUndefined()
+    expect(ctrl.pendingRuntimeSessionId).toBeUndefined()
+  })
+
+  it("App-session creation fails — no runtime session created and no active session published", async () => {
+    const runtimeCreate = vi.fn().mockResolvedValue({ id: "tf-session-fail-app" })
+    const ctrl = makeSessionTestController({ createSession: runtimeCreate })
+
+    service.createSession = vi.fn().mockRejectedValue(new Error("DB unavailable"))
+
+    const result = await ctrl.ensureSession()
+    expect(result).toBeUndefined()
+    expect(runtimeCreate).not.toHaveBeenCalled()
+    expect(ctrl.activeSessionId).toBeUndefined()
+    expect(ctrl.pendingAppSessionId).toBeUndefined()
+    expect(ctrl.pendingRuntimeSessionId).toBeUndefined()
   })
 })
-
 describe("ContextService session creation — direct (no vscode mock)", () => {
   it("creates session through ContextService with transaction", async () => {
     const { ContextDatabase } = await import("../context/db/Database.js")

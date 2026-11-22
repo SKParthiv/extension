@@ -45,10 +45,15 @@ function ChatView() {
       else if (d.type === "attachmentResolved") setAr(d.results)
       // Final assistant message from turn.done.output — deduplicate against already-streamed text
       else if (d.type === "assistantFinalMessage") {
-        const last = msgs[msgs.length-1]
-        if (last?.role === "assistant" && last.text.startsWith(d.text)) { /* already streamed, skip */ }
-        else if (last?.role === "assistant") { setMsgs((m:any)=>[...m.slice(0,-1),{...last,text:last.text+d.text}]) }
-        else { setMsgs((m:any)=>[...m,{role:"assistant",text:d.text}]) }
+        setMsgs((prev) => {
+          const last = prev[prev.length - 1]
+          if (last?.role === "assistant") {
+            // Replace the streamed partial result with the complete final output
+            return [...prev.slice(0, -1), { role: "assistant" as const, text: d.text }]
+          }
+          // No streamed content yet — append final output
+          return [...prev, { role: "assistant" as const, text: d.text }]
+        })
       }
       else if (d.type === "terminalEventReport") { /* handled by telemetryUpdate */ }
       else if (d.type === "requestCancelled") { setStatus("idle"); setErr("Request was cancelled: " + d.reason) }
@@ -84,8 +89,8 @@ function ChatView() {
       : msgs.map((m, i) => React.createElement("div", { key: i, className: `chat-message chat-${m.role}` }, React.createElement("span", { className: "message-role" }, m.role === "user" ? "You" : "Assistant"), React.createElement("p", null, m.text)))
     ),
     att.length > 0 && React.createElement("div", { className: "attachment-bar" }, att.map((a, i) => React.createElement("span", { key: i, className: "attachment-pill" }, a.label, React.createElement("button", { onClick: () => setAtt((x: any) => x.filter((_: any, j: any) => j !== i)) }, "x")))),
-    React.createElement("input", { className: "attachment-input", placeholder: "#file or @symbol...", value: aq, onChange: (e: any) => { const q = e.target.value; setAq(q); if (q.startsWith("#") || q.startsWith("@")) vscode.postMessage({type:"resolveAttachment", query: q}); else setAr([]) } }),
-    ar.length > 0 && React.createElement("div", { className: "attachment-results" }, ar.map((r, i) => React.createElement("button", { key: i, onClick: () => { setAtt((a:any)=>[...a,r]); setAq(""); setAr([]) } }, r.label))),
+    React.createElement("input", { className: "attachment-input", placeholder: "File/symbol attachment (coming soon)", value: aq, disabled: true, title: "Attachment injection is not yet implemented", onChange: (e: any) => { const q = e.target.value; setAq(q) } }),
+    ar.length > 0 && React.createElement("div", { className: "attachment-results muted" }, React.createElement("span", null, "Attachment picker disabled — see Requirements matrix")),
     React.createElement("textarea", { placeholder: "Ask NotTheLeast...", value: prompt, onChange: (e: any) => setPrompt(e.target.value), onKeyDown: (e: any) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send() } }, rows: 3 }),
     React.createElement("div", { className: "chat-actions" },
       React.createElement("span", { className: "muted" }, run ? stage : "Ctrl+Enter"),

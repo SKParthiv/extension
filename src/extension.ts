@@ -1,3 +1,21 @@
+/**
+ * @file
+ * VS Code extension entry point (activate / deactivate).
+ *
+ * == Startup sequence (activate) ==
+ * 1. Create a LocalMcpServer for MCP tool registration.
+ * 2. Create the NotTheLeastController (runtime, context DB, GPU poller).
+ * 3. Register webview views (GenericViewProvider, ContextViewProvider).
+ * 4. Register commands (inline edit, undo edit, code-action).
+ * 5. Register the MCP server as a VS Code language model tool provider.
+ *
+ * == Shutdown sequence (deactivate) ==
+ * 1. Stop the MCP HTTP server.
+ * 2. Dispose the controller (clears GPU poller, etc.).
+ *
+ * Owned by: VS Code extension host (not user-configurable).
+ */
+
 import * as vscode from "vscode"
 import { randomBytes } from "node:crypto"
 import * as path from "node:path"
@@ -10,12 +28,20 @@ import { createVscodeDiffReviewService } from "./edits/VscodeDiffReview"
 import { approveHunk, applyApprovedHunks } from "./edits/EditProposal"
 import { LocalMcpServer } from "./mcp/McpServer"
 
+/** Safe undo service shared across inline edit and MCP apply-hunk flows. */
 const undo = new SafeUndoService()
+/** The in-process loopback MCP server for TrueForge agent tool calls. */
 let localMcpServer: LocalMcpServer | undefined
+/** Cached MCP server connection info (host, port, URL, bearer token). */
 let localMcpInfo: Awaited<ReturnType<LocalMcpServer["start"]>> | undefined
+/** Central controller — owns runtime, context DB, state and webview broadcasts. */
 let controller: NotTheLeastController | undefined
-const runtimeReadyCallbacks: Array<() => void> = []
 
+/**
+ * VS Code extension activation entry point.
+ * Sets up MCP server, runtime controller, webview views, commands and
+ * MCP tool provider. Called once by VS Code on extension startup.
+ */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   if (!workspaceRoot) {
@@ -102,7 +128,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     )
   }
   // Connect broadcast to view providers - the ready message in GenericViewProvider registers the view
-  controller.initializeRuntime()
+  void controller.initializeRuntime()
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agent.copyMcpCredentials", async () => {
@@ -224,6 +250,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   )
 }
 
+/**
+ * VS Code extension deactivation entry point.
+ * Stops the MCP server and disposes the controller.
+ */
 export async function deactivate(): Promise<void> {
   await localMcpServer?.stop()
   localMcpServer = undefined
@@ -232,6 +262,12 @@ export async function deactivate(): Promise<void> {
   controller = undefined
 }
 
+/**
+ * Sends a "rewrite the selected code" instruction to the model and
+ * extracts the replacement text from the first fenced code block in
+ * the response.
+ * @throws If the model returns an empty replacement.
+ */
 async function requestReplacement(
   runtime: TrueForgeRuntime,
   sessionId: string,
@@ -262,6 +298,10 @@ async function requestReplacement(
   return replacement
 }
 
+/**
+ * Creates an {@link UndoWorkspace} adapter backed by VS Code text documents.
+ * Used by the SafeUndoService to read current and write restored content.
+ */
 function createUndoWorkspace() {
   return {
     readText: async (filePath: string) => (await vscode.workspace.openTextDocument(vscode.Uri.file(filePath))).getText(),

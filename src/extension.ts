@@ -5,8 +5,8 @@
  * == Startup sequence (activate) ==
  * 1. Create a LocalMcpServer for MCP tool registration.
  * 2. Create the NotTheLeastController (runtime, context DB, GPU poller).
- * 3. Register webview views (GenericViewProvider, ContextViewProvider).
- * 4. Register commands (inline edit, undo edit, code-action).
+ * 3. Register webview views (GenericViewProvider for the five NotTheLeast views).
+ * 4. Register commands (inline edit, undo edit, copy MCP credentials, copy diagnostics).
  * 5. Register the MCP server as a VS Code language model tool provider.
  *
  * == Shutdown sequence (deactivate) ==
@@ -141,7 +141,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agent.openPanel", async () => {
-      await vscode.commands.executeCommand("workbench.view.extension.trueforge")
+      await vscode.commands.executeCommand("workbench.view.extension.nottheleast")
+    }),
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agent.copyDiagnostics", () => {
+      controller?.handleExportDiagnostics()
     }),
   )
 

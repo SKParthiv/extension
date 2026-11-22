@@ -31,6 +31,12 @@ import type { ContextCandidate } from "../context/ContextSelector"
 import { ContextService } from "../context/ContextService"
 import { ContextDatabase } from "../context/db/Database"
 import { detectConflicts } from "../context/ContextConflicts"
+import {
+  attachmentTokenEstimate,
+  formatPromptWithContext,
+  type PromptAttachment,
+  type ResolvedAttachment,
+} from "../context/PromptContext"
 import type { ExtensionToWebviewMessage } from "../shared/messages"
 
 export class NotTheLeastController {
@@ -244,7 +250,7 @@ export class NotTheLeastController {
    * 3. Send the turn to the TrueForge runtime
    * 4. Events flow back through onRuntimeEvent for broadcast to webviews
    */
-  public async handlePrompt(text: string, attachments?: Array<any>): Promise<void> {
+  public async handlePrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
     logInfo("Prompt", "sendPrompt: " + text.slice(0, 80))
     if (!this.runtime) { this.broadcast({ type: "error", message: "Runtime not initialized." }); return }
     this.state.recordTiming({ submittedAt: Date.now() }); this.state.incrementRequestCount(); this.state.setStage("prompt.submitted")
@@ -258,12 +264,16 @@ export class NotTheLeastController {
     if (this.service) {
       const budget = vscode.workspace.getConfiguration("trueforge").get<number>("contextBudget", 4000)
       const candidates: ContextCandidate[] = await this.service.listSessionContext(this.activeSessionId ?? "")
-      const files: Array<{ path: string; content: string }> = [] // loadWorkspaceFiles not yet implemented
+      const files = await loadWorkspaceFiles()
+      const resolved = await this.resolveAttachments(attachments ?? [])
       const a = assembleContext({ candidates, query: text, files, budget })
-      const assemblyMsg: Record<string, unknown> = { type: "contextAssembly", budget: a.budget, usedTokens: Math.min(a.budget, a.selected.reduce((s, c) => s + c.candidate.block.tokenEstimate, 0)), selected: a.selected.map(s => ({ title: s.candidate.block.title, tokenEstimate: s.candidate.block.tokenEstimate, reason: s.reason })), omitted: a.omitted.map(o => ({ title: o.candidate.block.title, tokenEstimate: o.candidate.block.tokenEstimate, reason: "budget" as const })), retrieved: a.retrieved.map(r => ({ path: r.path, startLine: r.startLine, endLine: r.endLine, reason: "retrieved" as const })) } as unknown as Record<string, unknown>
+      const selectedTokens = a.selected.reduce((s, c) => s + c.candidate.block.tokenEstimate, 0)
+      const retrievedTokens = a.retrieved.reduce((s, r) => s + Math.ceil(r.text.length / 4), 0)
+      const attachmentTokens = resolved.reduce((s, r) => s + attachmentTokenEstimate(r.content), 0)
+      const assemblyMsg: Record<string, unknown> = { type: "contextAssembly", budget: a.budget, usedTokens: selectedTokens + retrievedTokens + attachmentTokens, selected: [...a.selected.map(s => ({ title: s.candidate.block.title, tokenEstimate: s.candidate.block.tokenEstimate, reason: s.reason })), ...resolved.map(r => ({ title: `${r.label} (${r.path})`, tokenEstimate: attachmentTokenEstimate(r.content), reason: "attachment" as const }))], omitted: a.omitted.map(o => ({ title: o.candidate.block.title, tokenEstimate: o.candidate.block.tokenEstimate, reason: "budget" as const })), retrieved: a.retrieved.map(r => ({ path: r.path, startLine: r.startLine, endLine: r.endLine, reason: "retrieved" as const })) } as unknown as Record<string, unknown>
       this.lastContextAssembly = assemblyMsg
       this.broadcast(assemblyMsg as any)
-      pt = fmtCtx(text, a)
+      pt = formatPromptWithContext(text, a, resolved)
     }
     this.state.recordTiming({ contextAssembledAt: Date.now() }); this.state.setStage("sending.request"); this.state.recordTiming({ requestDispatchedAt: Date.now() })
     try { await this.runtime.sendTurn(sid, pt) } catch (err) {
@@ -271,6 +281,46 @@ export class NotTheLeastController {
       this.state.setStage("failed"); this.state.recordTiming({ completedAt: Date.now() })
       this.broadcast({ type: "error", message: err instanceof Error ? err.message : String(err) })
     }
+  }
+
+  /**
+   * Loads workspace content for user attachments (#file / @symbol picks).
+   * Symbol attachments are sliced to their line range; every attachment is
+   * bounded to MAX_CHARS_PER_ATTACHMENT so a huge file cannot flood the
+   * prompt. Unresolvable paths are logged and skipped, never fatal.
+   */
+  private async resolveAttachments(attachments: PromptAttachment[]): Promise<ResolvedAttachment[]> {
+    const resolved: ResolvedAttachment[] = []
+    for (const attachment of attachments) {
+      try {
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(attachment.path))
+        const text = document.getText()
+        const startLine = attachment.startLine
+        const endLine = attachment.endLine ?? startLine
+        const sliced = startLine !== undefined
+          ? text.split("\n").slice(startLine - 1, endLine).join("\n")
+          : text
+        resolved.push({
+          type: attachment.type,
+          path: attachment.path,
+          label: attachment.label,
+          startLine,
+          endLine,
+          content: sliced.slice(0, MAX_CHARS_PER_ATTACHMENT),
+        })
+      } catch (error) {
+        logWarn("Prompt", `Attachment not resolved: ${attachment.path}`, {
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return resolved
+  }
+
+  /** Copies the redacted diagnostics ring buffer to the clipboard as JSON. */
+  public handleExportDiagnostics(): void {
+    void vscode.env.clipboard.writeText(exportDiagnosticsJson())
+    void vscode.window.showInformationMessage("NotTheLeast diagnostics copied to the clipboard as JSON.")
   }
   /** Cancels the currently active turn. Sets stage to "cancelled" and broadcasts the event. */
   public async handleCancel(): Promise<void> {
@@ -351,7 +401,13 @@ export class NotTheLeastController {
         for (const tc of event.toolCalls) this.pendingApprovals.set(event.threadId + ":" + tc.id, { appSessionId: "", runtimeSessionId: event.sessionId ?? "", threadId: event.threadId, toolCallId: tc.id })
         this.state.setStage("awaiting.approval"); this.state.recordActivity("tool", "Approval needed", event.toolCalls.map(tc => tc.toolName ?? tc.id).join(", "))
         this.broadcast({ type: "toolApprovalRequired", threadId: event.threadId, toolCalls: event.toolCalls ?? [], sessionId: event.sessionId }); break
-      case "turn.update": if (event.state && (event.state as any).status === "paused") this.broadcast({ type: "turnPaused", status: "paused", threadId: event.threadId ?? undefined }); break
+      case "turn.update": {
+        if (event.state.status === "paused") {
+          this.broadcast({ type: "turnPaused", status: "paused", threadId: event.threadId ?? undefined })
+          this.state.recordActivity("event", "Turn paused")
+        }
+        break
+      }
       case "turn.done": {
         const tds = event.state; this.state.recordTiming({ finalMessageAt: Date.now(), completedAt: Date.now() }); this.state.setActiveTurn(undefined)
         let termOut: { text: string; reasoning?: string } | null = null
@@ -396,22 +452,34 @@ export class NotTheLeastController {
   }
 }
 
-/**
- * Appends workspace file content as context to the user prompt.
- * 
- * KNOWN ISSUE: This function uses `await` without `async`, ignores the
- * `assembly` parameter, and returns an array when the return type says
- * `string`. It is broken at runtime. A fix requires:
- *   1. Marking the function `async`
- *   2. Using `assembly.selected` and `assembly.retrieved` instead of
- *      reloading all workspace files
- *   3. Returning the formatted prompt string
- */
-async function fmtCtx(prompt: string, assembly: ReturnType<typeof assembleContext>): string {
-  const files = await vscode.workspace.findFiles("**/*", "**/{node_modules,.git,out,dist,coverage}/**")
+/** Upper bound for content injected per user attachment (#file / @symbol). */
+const MAX_CHARS_PER_ATTACHMENT = 2400
+
+async function loadWorkspaceFiles(): Promise<Array<{ path: string; content: string }>> {
+  const files = await vscode.workspace.findFiles(
+    "**/*",
+    "**/{node_modules,.git,out,dist,coverage}/**",
+  )
+  if (!vscode.workspace.workspaceFolders?.length) {
+    return []
+  }
+
   const results: Array<{ path: string; content: string }> = []
-  for (const f of files.sort((a, b) => a.fsPath.localeCompare(b.fsPath))) {
-    try { const doc = await vscode.workspace.openTextDocument(f); if (doc.getText().length <= 40000) results.push({ path: vscode.workspace.asRelativePath(f, false), content: doc.getText() }) } catch (e) { if (!(e instanceof vscode.FileSystemError)) throw e }
+  for (const file of files.sort((left, right) => left.fsPath.localeCompare(right.fsPath))) {
+    try {
+      const document = await vscode.workspace.openTextDocument(file)
+      if (document.getText().length <= 40_000) {
+        results.push({
+          path: vscode.workspace.asRelativePath(file, false),
+          content: document.getText(),
+        })
+      }
+    } catch (error) {
+      if (error instanceof vscode.FileSystemError) {
+        continue
+      }
+      throw error
+    }
   }
   return results
 }

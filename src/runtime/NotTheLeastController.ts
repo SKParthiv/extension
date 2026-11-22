@@ -57,32 +57,33 @@ export class NotTheLeastController {
 
   /**
    * Registry of connected webview views keyed by viewId.
-   * Each entry stores a `postMessage` call so the controller can
-   * send typed messages to individual or all registered views.
+   * Each entry stores a `postMessage` callback and a unique
+   * per-view registration ID used for stale-disposal protection.
    */
-  private readonly viewRegistry = new Map<string, (msg: Record<string, unknown>) => void>()
+  private readonly viewRegistry = new Map<string, { postMessage: (msg: Record<string, unknown>) => void; regId: number }>()
   /**
-   * Monotonic generation counter for stale-disposal protection.
+   * Per-viewId monotonic counters for stale-disposal protection.
    */
-  private viewGeneration = 0
+  private readonly viewRegCounters = new Map<string, number>()
 
   /**
    * Register a webview with the controller. Returns a disposable
-   * that unregisters the view when called. Uses a monotonic
-   * generation counter to ensure a stale disposable never removes
-   * a newer registration for the same viewId.
+   * that unregisters the view when called. Uses a per-viewId
+   * monotonic registration ID so stale disposals never remove a
+   * newer registration for the same viewId.
    */
   public registerView(
     viewId: string,
     postMessage: (msg: Record<string, unknown>) => void,
   ): vscode.Disposable {
-    const gen = ++this.viewGeneration
-    this.viewRegistry.set(viewId, postMessage)
+    const regId = (this.viewRegCounters.get(viewId) ?? 0) + 1
+    this.viewRegCounters.set(viewId, regId)
+    this.viewRegistry.set(viewId, { postMessage, regId })
     void this.ensureRuntime()
     return {
       dispose: () => {
-        // Only remove if our generation is still the current one
-        if (this.viewGeneration === gen) {
+        const current = this.viewRegistry.get(viewId)
+        if (current && current.regId === regId) {
           this.viewRegistry.delete(viewId)
         }
       },
@@ -96,7 +97,7 @@ export class NotTheLeastController {
    */
   private broadcast(msg: ExtensionToWebviewMessage): void {
     const raw = msg as unknown as Record<string, unknown>
-    for (const fn of this.viewRegistry.values()) fn(raw)
+    for (const entry of this.viewRegistry.values()) entry.postMessage(raw)
   }
 
   /**
@@ -105,7 +106,7 @@ export class NotTheLeastController {
    */
   private snapshotFor(viewId?: string): void {
     const deliver = viewId
-      ? (msg: Record<string, unknown>) => { const fn = this.viewRegistry.get(viewId); if (fn) fn(msg) }
+      ? (msg: Record<string, unknown>) => { const entry = this.viewRegistry.get(viewId); if (entry) entry.postMessage(msg) }
       : (msg: Record<string, unknown>) => this.broadcast(msg as any)
     deliver({ type: "runtimeConnection", state: this.state.connectionState } as unknown as Record<string, unknown>)
     deliver({ type: "runtimeStatus", status: this.state.running ? "running" : "idle" } as unknown as Record<string, unknown>)

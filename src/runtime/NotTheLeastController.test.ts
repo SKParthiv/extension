@@ -38,52 +38,126 @@ describe("NotTheLeastController view registry and broadcast", () => {
     return new (NotTheLeastController as any)()
   }
 
-  it("broadcasts to every registered view", () => {
+  it("broadcasts to every registered view — all five viewIds", () => {
     const ctrl = makeController()
-    const received: string[] = []
+    const seen = new Set<string>()
 
-    const d1 = ctrl.registerView("view-a", vi.fn((msg) => received.push("a")))
-    const d2 = ctrl.registerView("view-b", vi.fn((msg) => received.push("b")))
+    const viewIds = ["nottheleast.chat", "nottheleast.activity", "nottheleast.tools", "nottheleast.diagnostics", "nottheleast.context"]
+    const disposables = viewIds.map((vid) =>
+      ctrl.registerView(vid, vi.fn((_msg) => seen.add(vid))),
+    )
 
-    // Trigger a snapshot broadcast (covers broadcast internally)
     ctrl.postSnapshot()
 
-    expect(received).toContain("a")
-    expect(received).toContain("b")
+    for (const vid of viewIds) {
+      expect(seen.has(vid)).toBe(true)
+    }
+    expect(seen.size).toBe(viewIds.length)
 
+    for (const d of disposables) d.dispose()
+  })
+
+  it("disposing Chat removes Chat even after Context has registered", () => {
+    const ctrl = makeController()
+    const chatMsgs: unknown[] = []
+    const ctxMsgs: unknown[] = []
+
+    const chatD = ctrl.registerView("chat", vi.fn((msg) => chatMsgs.push(msg)))
+    ctrl.registerView("context", vi.fn((msg) => ctxMsgs.push(msg)))
+
+    chatD.dispose()
+
+    ctrl.postSnapshot()
+    expect(chatMsgs.length).toBe(0)
+    expect(ctxMsgs.length).toBeGreaterThan(0)
+  })
+
+  it("disposing Context does not remove Chat", () => {
+    const ctrl = makeController()
+    const chatMsgs: unknown[] = []
+    const ctxMsgs: unknown[] = []
+
+    ctrl.registerView("chat", vi.fn((msg) => chatMsgs.push(msg)))
+    const ctxD = ctrl.registerView("context", vi.fn((msg) => ctxMsgs.push(msg)))
+
+    ctxD.dispose()
+
+    ctrl.postSnapshot()
+    expect(chatMsgs.length).toBeGreaterThan(0)
+    expect(ctxMsgs.length).toBe(0)
+  })
+
+  it("stale disposal cannot unregister a replacement registration", () => {
+    const ctrl = makeController()
+    const msgs1: unknown[] = []
+    const msgs2: unknown[] = []
+
+    const d1 = ctrl.registerView("chat", vi.fn((msg) => msgs1.push(msg)))
+    const d2 = ctrl.registerView("chat", vi.fn((msg) => msgs2.push(msg)))
+
+    // d1 is stale — calling it must not remove d2's registration
     d1.dispose()
+
+    ctrl.postSnapshot()
+
+    expect(msgs1.length).toBe(0)
+    expect(msgs2.length).toBeGreaterThan(0)
+
     d2.dispose()
   })
 
-  it("sends snapshot only to the requested viewId", () => {
+  it("no snapshot is sent before ready message", () => {
     const ctrl = makeController()
-    const aMsgs: unknown[] = []
-    const bMsgs: unknown[] = []
+    const msgs: unknown[] = []
+    const fn = vi.fn((msg) => msgs.push(msg))
 
-    ctrl.registerView("view-a", vi.fn((msg) => aMsgs.push(msg)))
-    ctrl.registerView("view-b", vi.fn((msg) => bMsgs.push(msg)))
+    // Register (simulating resolveWebviewView) — no snapshot yet
+    ctrl.registerView("chat", fn)
 
-    ctrl.postSnapshot("view-a")
-
-    expect(aMsgs.length).toBeGreaterThan(0)
-    expect(bMsgs.length).toBe(0)
+    // No snapshot was sent during registration alone
+    expect(msgs.length).toBe(0)
   })
 
-  it("sends snapshot only to context when requested", () => {
+  it("one ready message produces exactly one targeted snapshot", () => {
     const ctrl = makeController()
-    const ctxMsgs: unknown[] = []
     const chatMsgs: unknown[] = []
+    const ctxMsgs: unknown[] = []
 
-    ctrl.registerView("nottheleast.context", vi.fn((msg) => ctxMsgs.push(msg)))
-    ctrl.registerView("nottheleast.chat", vi.fn((msg) => chatMsgs.push(msg)))
+    ctrl.registerView("chat", vi.fn((msg) => chatMsgs.push(msg)))
+    ctrl.registerView("context", vi.fn((msg) => ctxMsgs.push(msg)))
 
-    ctrl.postSnapshot("nottheleast.context")
+    // Simulate a ready message from Chat only
+    ctrl.postSnapshot("chat")
 
-    expect(ctxMsgs.length).toBeGreaterThan(0)
-    expect(chatMsgs.length).toBe(0)
+    // Chat gets all three snapshot messages
+    const chatTypes = chatMsgs.map((m: any) => m.type)
+    expect(chatTypes).toContain("runtimeConnection")
+    expect(chatTypes).toContain("runtimeStatus")
+    expect(chatTypes).toContain("telemetryUpdate")
+    expect(chatTypes.length).toBe(3)
+
+    // Context gets nothing
+    expect(ctxMsgs.length).toBe(0)
   })
 
-  it("stops message delivery after disposal", () => {
+  it("Chat's snapshot never reaches another view", () => {
+    const ctrl = makeController()
+    const chatMsgs: unknown[] = []
+    const ctxMsgs: unknown[] = []
+    const activityMsgs: unknown[] = []
+
+    ctrl.registerView("chat", vi.fn((msg) => chatMsgs.push(msg)))
+    ctrl.registerView("context", vi.fn((msg) => ctxMsgs.push(msg)))
+    ctrl.registerView("activity", vi.fn((msg) => activityMsgs.push(msg)))
+
+    ctrl.postSnapshot("chat")
+
+    expect(chatMsgs.length).toBeGreaterThan(0)
+    expect(ctxMsgs.length).toBe(0)
+    expect(activityMsgs.length).toBe(0)
+  })
+
+  it("disposing a view through VS Code disposal unregisters it", () => {
     const ctrl = makeController()
     const msgs: unknown[] = []
     const fn = vi.fn((msg) => msgs.push(msg))
@@ -95,45 +169,15 @@ describe("NotTheLeastController view registry and broadcast", () => {
     expect(msgs.length).toBe(0)
   })
 
-  it("re-registering a view does not let old disposable unregister the new registration", () => {
-    const ctrl = makeController()
-    const msgs1: unknown[] = []
-    const msgs2: unknown[] = []
-
-    const d1 = ctrl.registerView("chat", vi.fn((msg) => msgs1.push(msg)))
-    const d2 = ctrl.registerView("chat", vi.fn((msg) => msgs2.push(msg)))
-
-    // Dispose the old registration — it should NOT remove the new one
-    d1.dispose()
-
-    ctrl.postSnapshot()
-
-    // Only the second registration should have received messages
-    expect(msgs1.length).toBe(0)
-    expect(msgs2.length).toBeGreaterThan(0)
-
-    d2.dispose()
-  })
-
-  it("sends exactly one snapshot on registration, no duplicate on ready", () => {
+  it("hidden views remain registered — snapshot reaches them", () => {
     const ctrl = makeController()
     const msgs: unknown[] = []
     const fn = vi.fn((msg) => msgs.push(msg))
 
-    // Simulate what GenericViewProvider does: register then pass viewId to postSnapshot
-    const d = ctrl.registerView("chat", fn)
-    ctrl.postSnapshot("chat")
+    ctrl.registerView("chat", fn)
+    // Hidden view: still registered, just not actively visible
+    ctrl.postSnapshot()
 
-    // Count distinct messages: there should be 3 (runtimeConnection, runtimeStatus, telemetryUpdate)
-    // and no duplicates of any single type
-    const types = msgs.map((m: any) => m.type)
-    const counts: Record<string, number> = {}
-    for (const t of types) counts[t] = (counts[t] ?? 0) + 1
-
-    expect(counts["runtimeConnection"]).toBe(1)
-    expect(counts["runtimeStatus"]).toBe(1)
-    expect(counts["telemetryUpdate"]).toBe(1)
-
-    d.dispose()
+    expect(msgs.length).toBeGreaterThan(0)
   })
 })

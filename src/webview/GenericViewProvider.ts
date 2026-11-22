@@ -8,33 +8,53 @@ export class GenericViewProvider implements vscode.WebviewViewProvider {
     public readonly viewId: string,
     private readonly controller: NotTheLeastController,
     private viewDisposable?: vscode.Disposable,
+    private messageSubscription?: vscode.Disposable,
+    private disposeSubscription?: vscode.Disposable,
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
     webviewView.webview.options = { enableScripts: true, localResourceRoots: [this.extensionUri] }
     const viewName = this.viewId.split(".").pop() ?? this.viewId
     webviewView.webview.html = this.getHtml(webviewView.webview, viewName)
-    // Register with controller and get a disposable tied to this view's lifecycle
+
+    // Clear any previous registrations before re-registering
     this.viewDisposable?.dispose()
+    this.messageSubscription?.dispose()
+    this.disposeSubscription?.dispose()
+
+    // Register with controller and get a disposable tied to this view's lifecycle
     this.viewDisposable = this.controller.registerView(this.viewId, (msg) => {
       void webviewView.webview.postMessage(msg)
     })
-    // Send an initial snapshot to this view only
-    this.controller.postSnapshot(this.viewId)
 
-    webviewView.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
-      if (message.type === "ready") { return } // snapshot already sent in resolveWebviewView
-      if (message.type === "sendPrompt") { await this.controller.handlePrompt(message.text, message.attachments); return }
-      if (message.type === "cancelTurn") { await this.controller.handleCancel(); return }
-      if (message.type === "toolApproval") { await this.controller.handleToolApproval(message); return }
-      if (message.type === "contextAction") { await this.controller.handleContextAction(message); return }
-      if (message.type === "resolveAttachment") { await this.controller.resolveAttachment(message.query); return }
-      if (message.type === "exportDiagnostics") { this.controller.handleExportDiagnostics(); return }
-      if (message.type === "setMode") { return }
-      if (message.type === "selectSession") { return }
-      if (message.type === "openPanel") { return }
-      if (message.type === "inlineEditRequest") { return }
-      if (message.type === "reviewDiff") { return }
+    // Listen for messages from this view's webview
+    this.messageSubscription = webviewView.webview.onDidReceiveMessage(
+      async (message: WebviewToExtensionMessage) => {
+        if (message.type === "ready") {
+          // Defer the initial snapshot until the webview is ready
+          this.controller.postSnapshot(this.viewId)
+          return
+        }
+        if (message.type === "sendPrompt") { await this.controller.handlePrompt(message.text, message.attachments); return }
+        if (message.type === "cancelTurn") { await this.controller.handleCancel(); return }
+        if (message.type === "toolApproval") { await this.controller.handleToolApproval(message); return }
+        if (message.type === "contextAction") { await this.controller.handleContextAction(message); return }
+        if (message.type === "resolveAttachment") { await this.controller.resolveAttachment(message.query); return }
+        if (message.type === "exportDiagnostics") { this.controller.handleExportDiagnostics(); return }
+        if (message.type === "setMode") { return }
+        if (message.type === "selectSession") { return }
+        if (message.type === "openPanel") { return }
+        if (message.type === "inlineEditRequest") { return }
+        if (message.type === "reviewDiff") { return }
+      },
+    )
+
+    // Clean up controller registration and message listener when VS Code disposes this view
+    this.disposeSubscription = webviewView.onDidDispose(() => {
+      this.viewDisposable?.dispose()
+      this.messageSubscription?.dispose()
+      this.viewDisposable = undefined
+      this.messageSubscription = undefined
     })
   }
 
@@ -56,8 +76,15 @@ export class GenericViewProvider implements vscode.WebviewViewProvider {
 </html>`
   }
 
-  /** Clean up the controller registration when VS Code disposes this view. */
-  public dispose(): void { this.viewDisposable?.dispose() }
+  /** Clean up all subscriptions (controller registration, message listener, dispose listener). */
+  public dispose(): void {
+    this.viewDisposable?.dispose()
+    this.messageSubscription?.dispose()
+    this.disposeSubscription?.dispose()
+    this.viewDisposable = undefined
+    this.messageSubscription = undefined
+    this.disposeSubscription = undefined
+  }
 }
 
 function createNonce(): string {

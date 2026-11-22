@@ -108,6 +108,24 @@ export class ContextService {
     return block
   }
 
+  public async createSession(title: string, id?: string): Promise<AppSession> {
+    const now = new Date().toISOString()
+    const sid = id ?? `s-${Date.now()}`
+    await this.database.transaction(() => {
+      this.database.run(
+        "INSERT INTO app_sessions(id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        [sid, title, now, now],
+      )
+    })
+    return {
+      id: sid,
+      title,
+      trueforgeSessionId: null,
+      createdAt: now,
+      updatedAt: now,
+    }
+  }
+
   public async edit(sessionId: string, blockId: string, title: string, content: string): Promise<void> {
     const membership = this.requireMembership(sessionId, blockId)
     this.assertUnlocked(membership)

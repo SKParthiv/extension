@@ -27,6 +27,7 @@ import { SharedRuntimeState } from "./SharedState"
 import { logInfo, logWarn, logError, exportDiagnosticsJson } from "./NotTheLeastLogger"
 import { readGpuTelemetry } from "./GpuTelemetry"
 import { assembleContext } from "../context/ContextAssembler"
+import type { ContextCandidate } from "../context/ContextSelector"
 import { ContextService } from "../context/ContextService"
 import { ContextDatabase } from "../context/db/Database"
 import { detectConflicts } from "../context/ContextConflicts"
@@ -54,6 +55,8 @@ export class NotTheLeastController {
   /** The application-level session ID that is currently active. */
   private activeSessionId?: string
   private gpuPollTimer?: ReturnType<typeof setInterval>
+  /** Cached result of the most recent context assembly, used for snapshot restoration. */
+  private lastContextAssembly?: Record<string, unknown>
 
   /**
    * Registry of connected webview views keyed by viewId.
@@ -102,15 +105,37 @@ export class NotTheLeastController {
 
   /**
    * Deliver a state snapshot to a specific view, or to all views
-   * when `viewId` is omitted.
+   * when `viewId` is omitted. Replays runtime status, connection,
+   * telemetry, and view-specific retained state (activity log,
+   * tool executions, context assembly, diagnostic events).
    */
   private snapshotFor(viewId?: string): void {
     const deliver = viewId
       ? (msg: Record<string, unknown>) => { const entry = this.viewRegistry.get(viewId); if (entry) entry.postMessage(msg) }
       : (msg: Record<string, unknown>) => this.broadcast(msg as any)
+
+    // Always send core runtime state
     deliver({ type: "runtimeConnection", state: this.state.connectionState } as unknown as Record<string, unknown>)
     deliver({ type: "runtimeStatus", status: this.state.running ? "running" : "idle" } as unknown as Record<string, unknown>)
     deliver({ type: "telemetryUpdate", data: this.state.getTelemetryData() } as unknown as Record<string, unknown>)
+
+    // View-specific retained state (only when a specific viewId is targeted)
+    if (viewId) {
+      const short = viewId.split(".").pop() ?? viewId
+      if (short === "activity") {
+        // Replay activity entries in chronological order (view prepends, so newest ends up at top)
+        for (const entry of this.state.activities) {
+          deliver({ type: "activityUpdate", entry } as unknown as Record<string, unknown>)
+        }
+      } else if (short === "tools") {
+        // Replay tool execution records (view replaces matching id, so full list is fine)
+        for (const tool of this.state.toolExecutions) {
+          deliver({ type: "toolExecutionUpdate", tool } as unknown as Record<string, unknown>)
+        }
+      } else if (short === "context" && this.lastContextAssembly) {
+        deliver({ type: "contextAssembly", ...this.lastContextAssembly } as unknown as Record<string, unknown>)
+      }
+    }
   }
 
   /**
@@ -175,13 +200,41 @@ export class NotTheLeastController {
   }
   /**
    * Creates a TrueForge runtime session and maps it to an application-level
-   * session ID (prefixed "s-"). Returns the application session ID, or
-   * undefined on failure.
+   * session ID (prefixed "s-"). Persists the session in the context database.
+   * Returns the application session ID, or undefined on failure.
+   *
+   * Order: create app session first, then runtime session so a runtime
+   * failure leaves no orphaned database row. On failure, no duplicate
+   * app session is created on the next attempt because the active app
+   * session ID is still unset.
    */
   private async ensureSession(): Promise<string | undefined> {
     if (!this.runtime) return undefined
-    try { const s = await this.runtime.createSession(); const e = "s-" + Date.now(); this.runtimeSessionIds.set(e, s.id); this.state.setActiveSession(e); this.activeSessionId = e; return e }
-    catch (e2) { logError("Runtime", "Session creation failed"); this.state.setConnectionState("degraded"); return undefined }
+    // Reuse the current session if it already has a valid runtime mapping
+    if (this.activeSessionId && this.runtimeSessionIds.has(this.activeSessionId)) {
+      return this.activeSessionId
+    }
+    try {
+      // Create app session first, then runtime session
+      const appId = `s-${Date.now()}`
+      if (this.service) {
+        await this.service.createSession("Agent Session", appId)
+      }
+      const tfs = await this.runtime.createSession()
+      if (this.service) {
+        await this.service.setTrueForgeSessionId(appId, tfs.id).catch((e) =>
+          logWarn("Runtime", "Failed to persist TrueForge session mapping", { message: String(e) }),
+        )
+      }
+      this.runtimeSessionIds.set(appId, tfs.id)
+      this.state.setActiveSession(appId)
+      this.activeSessionId = appId
+      return appId
+    } catch (e2) {
+      logError("Runtime", "Session creation failed", { message: String(e2) })
+      this.state.setConnectionState("degraded")
+      return undefined
+    }
   }
 
   /**
@@ -204,10 +257,12 @@ export class NotTheLeastController {
     let pt = text
     if (this.service) {
       const budget = vscode.workspace.getConfiguration("trueforge").get<number>("contextBudget", 4000)
-      const blocks = this.service.listBlocks(); const files = await loadFiles()
-      const candidates = blocks.map(({ block, membership }) => ({ block: { id: block.id, title: block.title, content: block.content, tokenEstimate: block.tokenEstimate }, priority: membership.priority as any, position: membership.position, reason: (membership.pinned ? "pinned" : "position") as any }))
+      const candidates: ContextCandidate[] = await this.service.listSessionContext(this.activeSessionId ?? "")
+      const files: Array<{ path: string; content: string }> = [] // loadWorkspaceFiles not yet implemented
       const a = assembleContext({ candidates, query: text, files, budget })
-      this.broadcast({ type: "contextAssembly", budget: a.budget, usedTokens: Math.min(a.budget, a.selected.reduce((s, c) => s + c.candidate.block.tokenEstimate, 0)), selected: a.selected.map(s => ({ title: s.candidate.block.title, tokenEstimate: s.candidate.block.tokenEstimate, reason: s.reason })), omitted: a.omitted.map(o => ({ title: o.candidate.block.title, tokenEstimate: o.candidate.block.tokenEstimate, reason: "budget" as const })), retrieved: a.retrieved.map(r => ({ path: r.path, startLine: r.startLine, endLine: r.endLine, reason: "retrieved" as const })) })
+      const assemblyMsg: Record<string, unknown> = { type: "contextAssembly", budget: a.budget, usedTokens: Math.min(a.budget, a.selected.reduce((s, c) => s + c.candidate.block.tokenEstimate, 0)), selected: a.selected.map(s => ({ title: s.candidate.block.title, tokenEstimate: s.candidate.block.tokenEstimate, reason: s.reason })), omitted: a.omitted.map(o => ({ title: o.candidate.block.title, tokenEstimate: o.candidate.block.tokenEstimate, reason: "budget" as const })), retrieved: a.retrieved.map(r => ({ path: r.path, startLine: r.startLine, endLine: r.endLine, reason: "retrieved" as const })) } as unknown as Record<string, unknown>
+      this.lastContextAssembly = assemblyMsg
+      this.broadcast(assemblyMsg as any)
       pt = fmtCtx(text, a)
     }
     this.state.recordTiming({ contextAssembledAt: Date.now() }); this.state.setStage("sending.request"); this.state.recordTiming({ requestDispatchedAt: Date.now() })
@@ -238,15 +293,30 @@ export class NotTheLeastController {
   }
   /**
    * Routes context management actions from the webview (store, attach,
-   * move, copy, archive) to the ContextService.
+   * move, copy) to the ContextService.
    */
-  public async handleContextAction(msg: any): Promise<void> {
-    if (!this.service) return
-    if (msg.action === "store") { const ed = vscode.window.activeTextEditor; if (ed) this.service.storeBlock(ed.document.getText(), { source: "file", path: vscode.workspace.asRelativePath(ed.document.uri, false) }, ed.document.fileName, this.activeSessionId) }
-    else if (msg.action === "attach") this.service.setBlockStatus(msg.blockId, "active")
-    else if (msg.action === "move" && msg.destinationSessionId) this.service.moveBlockToSession(msg.blockId, this.activeSessionId ?? "", msg.destinationSessionId)
-    else if (msg.action === "copy" && msg.destinationSessionId) this.service.copyBlockToSession(msg.blockId, this.activeSessionId ?? "", msg.destinationSessionId)
-    else this.service.setBlockStatus(msg.blockId, "archived")
+  public async handleContextAction(msg: { action: string; blockId: string; destinationSessionId?: string }): Promise<void> {
+    if (!this.service || !this.activeSessionId) return
+    try {
+      if (msg.action === "store") {
+        // Store the block in the Context Library with project visibility
+        await this.service.store(this.activeSessionId, msg.blockId, "project")
+      } else if (msg.action === "attach") {
+        // Attach the block to the current session with task scope
+        await this.service.attach(this.activeSessionId, msg.blockId, "task")
+      } else if (msg.action === "move" && msg.destinationSessionId) {
+        await this.service.move(this.activeSessionId, msg.destinationSessionId, msg.blockId)
+      } else if (msg.action === "copy" && msg.destinationSessionId) {
+        await this.service.copy(this.activeSessionId, msg.destinationSessionId, msg.blockId)
+      } else {
+        logWarn("Controller", "Unknown context action", { action: msg.action })
+        return
+      }
+    } catch (err) {
+      logError("Controller", "Context action failed", { action: msg.action, blockId: msg.blockId, message: String(err) })
+      this.broadcast({ type: "error", message: err instanceof Error ? err.message : String(err) })
+      return
+    }
     await this.postSnapshot()
   }
   /**

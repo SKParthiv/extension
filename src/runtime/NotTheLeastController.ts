@@ -32,6 +32,12 @@ import type { ContextCandidate } from "../context/ContextSelector"
 import { ContextService } from "../context/ContextService"
 import { ContextDatabase } from "../context/db/Database"
 import { detectConflicts } from "../context/ContextConflicts"
+import {
+  attachmentTokenEstimate,
+  formatPromptWithContext,
+  type PromptAttachment,
+  type ResolvedAttachment,
+} from "../context/PromptContext"
 import type { ExtensionToWebviewMessage } from "../shared/messages"
 
 export class NotTheLeastController {
@@ -295,84 +301,41 @@ export class NotTheLeastController {
    * Every terminal path (error, cancellation, completion) sets
    * runtimeStatus to "idle" and sets the appropriate terminal stage.
    */
-  public async handlePrompt(text: string, attachments?: Array<any>): Promise<void> {
+  public async handlePrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
     logInfo("Prompt", "handlePrompt: " + text.slice(0, 80))
-
-    // 1. Ensure runtime is available (retry-safe)
     await this.ensureRuntime().catch(() => {})
-    if (!this.runtime) {
-      this.broadcast({ type: "error", message: "Runtime not available. Check configuration and connection." })
-      return
-    }
-
-    // 2. Broadcast running status immediately — Send button disabled, Cancel available
-    this.state.recordTiming({ submittedAt: Date.now() })
-    this.state.incrementRequestCount()
-    this.state.setStage("prompt.submitted")
-    this.state.setRunning(true)
-    this.broadcast({ type: "runtimeStatus", status: "running" })
+    if (!this.runtime) { this.broadcast({ type: "error", message: "Runtime not available." }); return }
+    this.state.recordTiming({ submittedAt: Date.now() }); this.state.incrementRequestCount(); this.state.setStage("prompt.submitted")
+    this.state.setRunning(true); this.broadcast({ type: "runtimeStatus", status: "running" })
     this.broadcast({ type: "telemetryUpdate", data: this.state.getTelemetryData() })
-    this.broadcast({ type: "userMessage", text, attachments })
-    this.state.recordActivity("event", "Prompt submitted")
-
-    // Resolve or create a session
-    let runtimeSid: string | undefined
-    if (this.activeSessionId) {
-      runtimeSid = this.runtimeSessionIds.get(this.activeSessionId)
-    }
+    this.broadcast({ type: "userMessage", text, attachments }); this.state.recordActivity("event", "Prompt submitted")
+    let runtimeSid;
+    if (this.activeSessionId) runtimeSid = this.runtimeSessionIds.get(this.activeSessionId)
     if (!runtimeSid) {
       this.state.setStage("resolving.session")
       const appSid = await this.ensureSession()
-      if (!appSid) {
-        this.state.setStage("failed")
-        this.state.setRunning(false)
-        this.state.recordTiming({ completedAt: Date.now() })
-        this.broadcast({ type: "runtimeStatus", status: "idle" })
-        this.broadcast({ type: "telemetryUpdate", data: this.state.getTelemetryData() })
-        this.broadcast({ type: "error", message: "Session creation failed." })
-        return
-      }
+      if (!appSid) { this.state.setStage("failed"); this.state.setRunning(false); this.state.recordTiming({ completedAt: Date.now() }); this.broadcast({ type: "runtimeStatus", status: "idle" }); this.broadcast({ type: "error", message: "Session creation failed." }); return }
       runtimeSid = this.runtimeSessionIds.get(appSid)
     }
-    this.state.recordTiming({ sessionResolvedAt: Date.now() })
-
-    // 3. Assemble context from DB candidates AND workspace files
-    this.state.setStage("assembling.context")
+    this.state.recordTiming({ sessionResolvedAt: Date.now() }); this.state.setStage("assembling.context")
     let formattedPrompt = text
     try {
       const budget = vscode.workspace.getConfiguration("trueforge").get<number>("contextBudget", 4000)
       let candidates: ContextCandidate[] = []
-      try {
-        if (this.activeSessionId && this.service) {
-          candidates = (await this.service.listSessionContext(this.activeSessionId)) ?? []
-        }
-      } catch {
-        logWarn("Context", "Failed to list session context", { message: "Continuing with empty context" })
-      }
+      try { if (this.activeSessionId && this.service) candidates = (await this.service.listSessionContext(this.activeSessionId)) ?? [] } catch { logWarn("Context", "Failed to list session context", { message: "empty" }) }
       const workspaceFiles = await loadWorkspaceFiles()
+      const resolved = await this.resolveAttachments(attachments ?? [])
       const assembly = assembleContext({ candidates, query: text, files: workspaceFiles, budget })
-
-      // Broadcast context assembly summary
-      const assemblyMsg: Record<string, unknown> = {
-        type: "contextAssembly",
-        budget: assembly.budget,
-        usedTokens: Math.min(assembly.budget, assembly.selected.reduce((s, c) => s + c.candidate.block.tokenEstimate, 0)),
-        selected: assembly.selected.map(s => ({ title: s.candidate.block.title, tokenEstimate: s.candidate.block.tokenEstimate, reason: s.reason })),
-        omitted: assembly.omitted.map(o => ({ title: o.candidate.block.title, tokenEstimate: o.candidate.block.tokenEstimate, reason: "budget" as const })),
-        retrieved: assembly.retrieved.map(r => ({ path: r.path, startLine: r.startLine, endLine: r.endLine, reason: "retrieved" as const })),
-      } as unknown as Record<string, unknown>
-      this.lastContextAssembly = assemblyMsg
-      this.broadcast(assemblyMsg as any)
-
-      formattedPrompt = formatPromptWithContext(text, assembly)
-    } catch (contextError) {
-      logError("Context", "Context loading/assembly failed", { message: String(contextError) })
-      this.state.setStage("failed")
-      this.state.setRunning(false)
-      this.state.recordTiming({ completedAt: Date.now() })
-      this.broadcast({ type: "runtimeStatus", status: "idle" })
-      this.broadcast({ type: "telemetryUpdate", data: this.state.getTelemetryData() })
-      this.broadcast({ type: "error", message: "Context loading failed: " + (contextError instanceof Error ? contextError.message : String(contextError)) })
+      const st = assembly.selected.reduce((s, x) => s + x.candidate.block.tokenEstimate, 0)
+      const rt = assembly.retrieved.reduce((s, x) => s + Math.ceil(x.text.length / 4), 0)
+      const at = resolved.reduce((s, x) => s + attachmentTokenEstimate(x.content), 0)
+      const msg = { type: "contextAssembly", budget: assembly.budget, usedTokens: st + rt + at, selected: [...assembly.selected.map(s => ({ title: s.candidate.block.title, tokenEstimate: s.candidate.block.tokenEstimate, reason: s.reason })), ...resolved.map(r => ({ title: r.label + " (" + r.path + ")", tokenEstimate: attachmentTokenEstimate(r.content), reason: "attachment" }))], omitted: assembly.omitted.map(o => ({ title: o.candidate.block.title, tokenEstimate: o.candidate.block.tokenEstimate, reason: "budget" })), retrieved: assembly.retrieved.map(r => ({ path: r.path, startLine: r.startLine, endLine: r.endLine, reason: "retrieved" })) }
+      this.lastContextAssembly = msg; this.broadcast(msg as any)
+      formattedPrompt = formatPromptWithContext(text, assembly, resolved)
+    } catch (ctxErr) {
+      logError("Context", "Assembly failed", { message: String(ctxErr) })
+      this.state.setStage("failed"); this.state.setRunning(false); this.state.recordTiming({ completedAt: Date.now() })
+      this.broadcast({ type: "runtimeStatus", status: "idle" }); this.broadcast({ type: "error", message: "Context loading failed: " + String(ctxErr) })
       return
     }
 
@@ -393,7 +356,40 @@ export class NotTheLeastController {
       this.broadcast({ type: "error", message: err instanceof Error ? err.message : String(err) })
     }
   }
-  /** Cancels the currently active turn. Sets stage to "cancelled" and broadcasts the event. */
+
+  /**
+   * Loads workspace content for user attachments (#file / @symbol picks).
+   * Symbol attachments are sliced to their line range; every attachment is
+   * bounded to MAX_CHARS_PER_ATTACHMENT so a huge file cannot flood the
+   * prompt. Unresolvable paths are logged and skipped, never fatal.
+   */
+  private async resolveAttachments(attachments: PromptAttachment[]): Promise<ResolvedAttachment[]> {
+    const resolved: ResolvedAttachment[] = []
+    for (const attachment of attachments) {
+      try {
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(attachment.path))
+        const text = document.getText()
+        const startLine = attachment.startLine
+        const endLine = attachment.endLine ?? startLine
+        const sliced = startLine !== undefined
+          ? text.split("\n").slice(startLine - 1, endLine).join("\n")
+          : text
+        resolved.push({
+          type: attachment.type,
+          path: attachment.path,
+          label: attachment.label,
+          startLine,
+          endLine,
+          content: sliced.slice(0, MAX_CHARS_PER_ATTACHMENT),
+        })
+      } catch (error) {
+        logWarn("Prompt", `Attachment not resolved: ${attachment.path}`, {
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return resolved
+  }
   public async handleCancel(): Promise<void> {
     if (!this.runtime || !this.activeSessionId) return
     const csid = this.runtimeSessionIds.get(this.activeSessionId)
@@ -493,6 +489,13 @@ export class NotTheLeastController {
         for (const tc of event.toolCalls) this.pendingApprovals.set(event.threadId + ":" + tc.id, { appSessionId: "", runtimeSessionId: event.sessionId ?? "", threadId: event.threadId, toolCallId: tc.id })
         this.state.setStage("awaiting.approval"); this.state.recordActivity("tool", "Approval needed", event.toolCalls.map(tc => tc.toolName ?? tc.id).join(", "))
         this.broadcast({ type: "toolApprovalRequired", threadId: event.threadId, toolCalls: event.toolCalls ?? [], sessionId: event.sessionId }); break
+      case "turn.update": {
+        if (event.state.status === "paused") {
+          this.broadcast({ type: "turnPaused", status: "paused", threadId: event.threadId ?? undefined })
+          this.state.recordActivity("event", "Turn paused")
+        }
+        break
+      }
       case "turn.done": {
         const tds = event.state; this.state.recordTiming({ finalMessageAt: Date.now(), completedAt: Date.now() }); this.state.setActiveTurn(undefined)
         let termOut: { text: string; reasoning?: string } | null = null
@@ -558,75 +561,25 @@ export class NotTheLeastController {
   }
 }
 
-/**
- * Formats a user prompt with assembled context into a single string.
- * Includes selected context blocks and retrieved workspace snippets.
- * The original prompt is returned unchanged when there is no additional context.
- *
- * Pure synchronous function — never reads files or performs async I/O.
- */
-function formatPromptWithContext(
-  prompt: string,
-  assembly: ReturnType<typeof assembleContext>,
-): string {
-  const selected = assembly.selected
-    .map(({ candidate }) => `### ${candidate.block.title}\n${candidate.block.content}`)
-    .join("\n\n")
-  const retrieved = assembly.retrieved
-    .map(({ path, text, startLine, endLine }) => `### ${path}:${startLine}-${endLine}\n${text}`)
-    .join("\n\n")
-  if (!selected && !retrieved) {
-    return prompt
-  }
-  return `${prompt}\n\n<context>\n${[selected, retrieved].filter(Boolean).join("\n\n")}\n</context>`
-}
+/** Upper bound for content injected per user attachment (#file / @symbol). */
+const MAX_CHARS_PER_ATTACHMENT = 2400
 
-/**
- * Loads workspace files for context assembly with bounded limits.
- *
- * Limits (documented in code):
- * - maxFiles: 20  (files discovered)
- * - maxCharsPerFile: 4000  (per-file read cap)
- * - maxTotalBytes: 80_000  (total across all files)
- *
- * File ordering: deterministic sorted by relative path.
- * Exclusions: .git, node_modules, out, dist, coverage.
- * Skips: unreadable, binary and oversized files.
- */
-async function loadWorkspaceFiles(): Promise<Array<{ path: string; content: string }>> {
-  const maxFiles = 20
-  const maxCharsPerFile = 4000
-  const maxTotalBytes = 80_000
-
-  const uris = await vscode.workspace.findFiles(
-    "**/*",
-    "**/{node_modules,.git,out,dist,coverage}/**",
-    maxFiles,
-  )
+async function loadWorkspaceFiles() {
+  const maxFiles = 20; const maxChars = 4000; const maxBytes = 80000
+  const uris = await vscode.workspace.findFiles("**/*", "**/{node_modules,.git,out,dist,coverage}/**", maxFiles)
   if (!uris.length) return []
-
-  // Deterministic order by relative path
   uris.sort((a, b) => a.fsPath.localeCompare(b.fsPath))
-
-  const results: Array<{ path: string; content: string }> = []
-  let totalBytes = 0
-
-  for (const uri of uris) {
-    if (totalBytes >= maxTotalBytes) break
+  const results = []; let total = 0
+  for (const u of uris) {
+    if (total >= maxBytes) break
     try {
-      const doc = await vscode.workspace.openTextDocument(uri)
-      const text = doc.getText()
-      if (text.length > maxCharsPerFile) continue
+      const doc = await vscode.workspace.openTextDocument(u); const text = doc.getText()
+      if (text.length > maxChars) continue
       const bytes = Buffer.byteLength(text, "utf-8")
-      if (bytes > maxTotalBytes - totalBytes) continue
-      results.push({
-        path: vscode.workspace.asRelativePath(uri, false),
-        content: text,
-      })
-      totalBytes += bytes
-    } catch {
-      // Skip unreadable files (binary, permissions, etc.)
-    }
+      if (bytes > maxBytes - total) continue
+      results.push({ path: vscode.workspace.asRelativePath(u, false), content: text })
+      total += bytes
+    } catch {}
   }
   return results
 }

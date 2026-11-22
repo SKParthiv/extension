@@ -47,8 +47,19 @@
 
 3. Run `NotTheLeast: Copy MCP Connector Credentials` from the command palette.
 
-4. Bootstrap:
+4. Bootstrap (idempotent; fails fast if the model is not listed by TrueForge):
+   ```bash
+   # macOS / Linux (bash, zsh)
+   TRUEFORGE_CONNECTOR_URL="http://127.0.0.1:8765/mcp" \
+   TRUEFORGE_MCP_TOKEN="<token from NotTheLeast: Copy MCP Connector Credentials>" \
+   TRUEFORGE_MODEL="<model FQN already listed by TrueForge>" \
+   node scripts/bootstrap-trueforge.mjs
+   ```
    ```powershell
+   # Windows (PowerShell)
+   $env:TRUEFORGE_CONNECTOR_URL = "http://127.0.0.1:8765/mcp"
+   $env:TRUEFORGE_MCP_TOKEN = "<token from NotTheLeast: Copy MCP Connector Credentials>"
+   $env:TRUEFORGE_MODEL = "<model FQN already listed by TrueForge>"
    node scripts/bootstrap-trueforge.mjs
    ```
 

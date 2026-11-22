@@ -33,7 +33,10 @@ vi.mock("vscode", () => {
     },
     window: {
       showErrorMessage: vi.fn(),
-      createOutputChannel: vi.fn(() => mockOutputChannel),
+      showInformationMessage: vi.fn(),
+      createOutputChannel: vi.fn(() => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })),
+    },
+    env: { clipboard: { writeText: vi.fn() },
     },
     Uri: {
       joinPath: vi.fn((base: any, ...segments: string[]) => ({ fsPath: `${base?.fsPath ?? ""}/${segments.join("/")}` })),
@@ -517,5 +520,21 @@ describe("ContextService session creation — direct (no vscode mock)", () => {
     } finally {
       database.close()
     }
+  })
+})
+
+describe("handleExportDiagnostics", () => {
+  it("copies redacted diagnostics JSON to the clipboard", async () => {
+    const vscode = await import("vscode")
+    const { NotTheLeastController } = await import("./NotTheLeastController.js")
+    const { logInfo } = await import("./NotTheLeastLogger.js")
+    const controller = new NotTheLeastController()
+    logInfo("Test", "export me")
+    await controller.handleExportDiagnostics()
+    expect(vscode.env.clipboard.writeText).toHaveBeenCalledTimes(1)
+    const written = (vscode.env.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(written).toContain("export me")
+    expect(JSON.parse(written).events.length).toBeGreaterThan(0)
+    expect(vscode.window.showInformationMessage).toHaveBeenCalled()
   })
 })

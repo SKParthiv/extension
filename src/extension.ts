@@ -118,8 +118,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Register all five NotTheLeast views ──
   const viewIds = ["nottheleast.chat", "nottheleast.activity", "nottheleast.tools", "nottheleast.diagnostics", "nottheleast.context"]
-  const postMsgFns = new Map<string, (msg: Record<string, unknown>) => void>()
-  controller.setBroadcast((msg) => { for (const fn of postMsgFns.values()) fn(msg) })
 
   for (const vid of viewIds) {
     const p = new GenericViewProvider(context.extensionUri, vid, controller)

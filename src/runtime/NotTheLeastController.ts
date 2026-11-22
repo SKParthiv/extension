@@ -54,16 +54,63 @@ export class NotTheLeastController {
   /** The application-level session ID that is currently active. */
   private activeSessionId?: string
   private gpuPollTimer?: ReturnType<typeof setInterval>
+
   /**
-   * Broadcast function installed by extension.ts. Receives a
-   * Record<string, unknown> and forwards it verbatim to every
-   * GenericViewProvider's postMessage so the webviews receive it.
+   * Registry of connected webview views keyed by viewId.
+   * Each entry stores a `postMessage` call so the controller can
+   * send typed messages to individual or all registered views.
    */
-  private _broadcast: (msg: Record<string, unknown>) => void = () => {}
-  /** Register the broadcast function (called once from extension.ts). */
-  public setBroadcast(fn: (msg: Record<string, unknown>) => void): void { this._broadcast = fn }
-  /** Type-safe internal helper that casts to Record. */
-  private broadcast(msg: ExtensionToWebviewMessage): void { this._broadcast(msg as unknown as Record<string, unknown>) }
+  private readonly viewRegistry = new Map<string, (msg: Record<string, unknown>) => void>()
+  /**
+   * Monotonic generation counter for stale-disposal protection.
+   */
+  private viewGeneration = 0
+
+  /**
+   * Register a webview with the controller. Returns a disposable
+   * that unregisters the view when called. Uses a monotonic
+   * generation counter to ensure a stale disposable never removes
+   * a newer registration for the same viewId.
+   */
+  public registerView(
+    viewId: string,
+    postMessage: (msg: Record<string, unknown>) => void,
+  ): vscode.Disposable {
+    const gen = ++this.viewGeneration
+    this.viewRegistry.set(viewId, postMessage)
+    void this.ensureRuntime()
+    return {
+      dispose: () => {
+        // Only remove if our generation is still the current one
+        if (this.viewGeneration === gen) {
+          this.viewRegistry.delete(viewId)
+        }
+      },
+    }
+  }
+
+  /**
+   * Broadcast a message to every registered webview.
+   * Each view gets its own copy (same reference, but webview.postMessage
+   * serializes it independently).
+   */
+  private broadcast(msg: ExtensionToWebviewMessage): void {
+    const raw = msg as unknown as Record<string, unknown>
+    for (const fn of this.viewRegistry.values()) fn(raw)
+  }
+
+  /**
+   * Deliver a state snapshot to a specific view, or to all views
+   * when `viewId` is omitted.
+   */
+  private snapshotFor(viewId?: string): void {
+    const deliver = viewId
+      ? (msg: Record<string, unknown>) => { const fn = this.viewRegistry.get(viewId); if (fn) fn(msg) }
+      : (msg: Record<string, unknown>) => this.broadcast(msg as any)
+    deliver({ type: "runtimeConnection", state: this.state.connectionState } as unknown as Record<string, unknown>)
+    deliver({ type: "runtimeStatus", status: this.state.running ? "running" : "idle" } as unknown as Record<string, unknown>)
+    deliver({ type: "telemetryUpdate", data: this.state.getTelemetryData() } as unknown as Record<string, unknown>)
+  }
 
   /**
    * Initialise context database and GPU telemetry polling.
@@ -75,11 +122,6 @@ export class NotTheLeastController {
     this.initGpu()
     logInfo("Controller", "NotTheLeast controller initialized")
   }
-  /**
-   * Called when a webview view is registered. Triggers lazy runtime
-   * initialisation if not already connected.
-   */
-  public registerView(viewId: string): void { void this.ensureRuntime() }
 
   /**
    * Public entry point called by extension.ts after activation.
@@ -97,14 +139,13 @@ export class NotTheLeastController {
   }
 
   /**
-   * Broadcasts the current application state snapshot to every webview.
+   * Broadcasts the current application state snapshot to every webview,
+   * or to a specific view when `viewId` is provided.
    * Called when a view opens or re-opens so it receives the latest state
    * without waiting for the next event.
    */
-  public postSnapshot(): void {
-    this.broadcast({ type: "runtimeConnection", state: this.state.connectionState })
-    this.broadcast({ type: "runtimeStatus", status: this.state.running ? "running" : "idle" })
-    this.broadcast({ type: "telemetryUpdate", data: this.state.getTelemetryData() })
+  public postSnapshot(viewId?: string): void {
+    this.snapshotFor(viewId)
   }
 
   /**
@@ -295,7 +336,7 @@ export class NotTheLeastController {
  *      reloading all workspace files
  *   3. Returning the formatted prompt string
  */
-function fmtCtx(prompt: string, assembly: ReturnType<typeof assembleContext>): string {
+async function fmtCtx(prompt: string, assembly: ReturnType<typeof assembleContext>): string {
   const files = await vscode.workspace.findFiles("**/*", "**/{node_modules,.git,out,dist,coverage}/**")
   const results: Array<{ path: string; content: string }> = []
   for (const f of files.sort((a, b) => a.fsPath.localeCompare(b.fsPath))) {

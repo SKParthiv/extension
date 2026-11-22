@@ -7,17 +7,23 @@ export class GenericViewProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     public readonly viewId: string,
     private readonly controller: NotTheLeastController,
+    private viewDisposable?: vscode.Disposable,
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
     webviewView.webview.options = { enableScripts: true, localResourceRoots: [this.extensionUri] }
     const viewName = this.viewId.split(".").pop() ?? this.viewId
     webviewView.webview.html = this.getHtml(webviewView.webview, viewName)
-    this.controller.registerView(this.viewId)
-    this.controller.postSnapshot()
+    // Register with controller and get a disposable tied to this view's lifecycle
+    this.viewDisposable?.dispose()
+    this.viewDisposable = this.controller.registerView(this.viewId, (msg) => {
+      void webviewView.webview.postMessage(msg)
+    })
+    // Send an initial snapshot to this view only
+    this.controller.postSnapshot(this.viewId)
 
     webviewView.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
-      if (message.type === "ready") { await this.controller.postSnapshot(); return }
+      if (message.type === "ready") { return } // snapshot already sent in resolveWebviewView
       if (message.type === "sendPrompt") { await this.controller.handlePrompt(message.text, message.attachments); return }
       if (message.type === "cancelTurn") { await this.controller.handleCancel(); return }
       if (message.type === "toolApproval") { await this.controller.handleToolApproval(message); return }
@@ -49,6 +55,9 @@ export class GenericViewProvider implements vscode.WebviewViewProvider {
 </body>
 </html>`
   }
+
+  /** Clean up the controller registration when VS Code disposes this view. */
+  public dispose(): void { this.viewDisposable?.dispose() }
 }
 
 function createNonce(): string {

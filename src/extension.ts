@@ -1,8 +1,9 @@
 import * as vscode from "vscode"
 import { randomBytes } from "node:crypto"
 import * as path from "node:path"
-import { ContextViewProvider } from "./webview/ContextViewProvider"
 import { TrueForgeRuntime } from "./runtime/TrueForgeRuntime"
+import { NotTheLeastController } from "./runtime/NotTheLeastController"
+import { GenericViewProvider } from "./webview/GenericViewProvider"
 import { InlineEditService, createInlineEditProposal } from "./edits/InlineEditFlow"
 import { SafeUndoService } from "./edits/SafeUndo"
 import { createVscodeDiffReviewService } from "./edits/VscodeDiffReview"
@@ -12,6 +13,8 @@ import { LocalMcpServer } from "./mcp/McpServer"
 const undo = new SafeUndoService()
 let localMcpServer: LocalMcpServer | undefined
 let localMcpInfo: Awaited<ReturnType<LocalMcpServer["start"]>> | undefined
+let controller: NotTheLeastController | undefined
+const runtimeReadyCallbacks: Array<() => void> = []
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -83,12 +86,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
   }
 
-  const provider = new ContextViewProvider(context.extensionUri, context.globalStorageUri, () => localMcpServer)
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ContextViewProvider.viewId, provider, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
-  )
+  // ── NotTheLeast controller (owns runtime, SharedState, logging, GPU telemetry) ──
+  controller = new NotTheLeastController()
+  await controller.initialize(context)
+
+  // ── Register all five NotTheLeast views ──
+  const viewIds = ["nottheleast.chat", "nottheleast.activity", "nottheleast.tools", "nottheleast.diagnostics", "nottheleast.context"]
+  const postMsgFns = new Map<string, (msg: Record<string, unknown>) => void>()
+  controller.setBroadcast((msg) => { for (const fn of postMsgFns.values()) fn(msg) })
+
+  for (const vid of viewIds) {
+    const p = new GenericViewProvider(context.extensionUri, vid, controller)
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(vid, p, { webviewOptions: { retainContextWhenHidden: true } }),
+    )
+  }
+  // Connect broadcast to view providers - the ready message in GenericViewProvider registers the view
+  controller.initializeRuntime()
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agent.copyMcpCredentials", async () => {
@@ -214,6 +228,8 @@ export async function deactivate(): Promise<void> {
   await localMcpServer?.stop()
   localMcpServer = undefined
   localMcpInfo = undefined
+  controller?.dispose()
+  controller = undefined
 }
 
 async function requestReplacement(

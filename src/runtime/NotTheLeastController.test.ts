@@ -5,7 +5,7 @@
  * Uses a minimal vscode shim to mock VS Code APIs.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from "vitest"
 import { NotTheLeastController } from "./NotTheLeastController"
 import { GenericViewProvider } from "../webview/GenericViewProvider"
 
@@ -30,6 +30,8 @@ vi.mock("vscode", () => {
       getConfiguration() {
         return { get: vi.fn(() => "") }
       },
+      findFiles: vi.fn().mockResolvedValue([]),
+      workspaceFolders: undefined,
     },
     window: {
       showErrorMessage: vi.fn(),
@@ -522,6 +524,95 @@ describe("ContextService session creation — direct (no vscode mock)", () => {
     }
   })
 })
+
+// ── Attachment picker regression tests ──
+
+describe("attachment search — resolveAttachment path/requestId", () => {
+  let ctrl: any
+  let mockVscode: any
+  let attachmentPicker: typeof import("../attachments/attachmentPicker")
+
+  beforeAll(async () => {
+    attachmentPicker = await import("../attachments/attachmentPicker.js")
+  })
+
+  beforeEach(async () => {
+    ctrl = makeController()
+    ctrl.registerView("test", vi.fn())
+    mockVscode = await import("vscode")
+  })
+
+  it("file results carry absolute f.fsPath (not asRelativePath)", async () => {
+    const postMsg = vi.fn()
+    ctrl.registerView("v1", postMsg)
+
+    // Set up workspace folders for this test
+    const origFolders = (mockVscode as any).workspace.workspaceFolders
+    ;(mockVscode as any).workspace.workspaceFolders = [
+      { uri: { fsPath: "/workspace" } },
+    ]
+
+    const mockFiles = [
+      { fsPath: "/workspace/src/main.ts" },
+      { fsPath: "/workspace/src/utils.ts" },
+    ]
+    const origFindFiles = (mockVscode as any).workspace.findFiles
+    ;(mockVscode as any).workspace.findFiles = vi.fn().mockResolvedValue(mockFiles)
+
+    await ctrl.resolveAttachment("#main", 1)
+
+    ;(mockVscode as any).workspace.findFiles = origFindFiles
+    ;(mockVscode as any).workspace.workspaceFolders = origFolders
+
+    const broadcastCalls = postMsg.mock.calls.filter(([m]: any) => m.type === "attachmentResolved")
+    expect(broadcastCalls.length).toBeGreaterThan(0)
+    const msg = broadcastCalls[0][0]
+    expect(msg.requestId).toBe(1)
+    expect(msg.results.length).toBe(2)
+    for (const r of msg.results) {
+      expect(r.path).toEqual(expect.stringContaining("/workspace/src"))
+    }
+  })
+
+  it("out-of-order requestId — later response with stale requestId is rejected by webview logic", () => {
+    const { isCurrentResponse } = attachmentPicker
+    expect(isCurrentResponse("#A", 1, 2)).toBe(false)
+    expect(isCurrentResponse("#B", 2, 2)).toBe(true)
+  })
+
+  it("clearing input invalidates pending — requestId advances without query", () => {
+    const { isCurrentResponse } = attachmentPicker
+    expect(isCurrentResponse("#late", 2, 3)).toBe(false)
+  })
+})
+
+describe("attachment path validation — resolveAttachments", () => {
+  let ctrl: any
+  let mockVscode: any
+
+  beforeEach(async () => {
+    ctrl = makeController()
+    ctrl.service = {
+      listSessionContext: vi.fn().mockResolvedValue([]),
+      getSession: vi.fn(),
+    }
+    mockVscode = await import("vscode")
+  })
+
+  it("isPathInWorkspace returns false when no workspace folders", () => {
+    const origFolders = (mockVscode as any).workspace.workspaceFolders
+    ;(mockVscode as any).workspace.workspaceFolders = undefined
+    const result = ctrl.isPathInWorkspace("/some/path")
+    ;(mockVscode as any).workspace.workspaceFolders = origFolders
+    expect(result).toBe(false)
+  })
+
+  it("resolveAttachments skips outside-workspace path", async () => {
+    const attachments = [{ type: "file", path: "/etc/passwd", label: "passwd" }]
+    const resolved = await ctrl.resolveAttachments(attachments)
+    expect(resolved.length).toBe(0)
+  })
+}) as any
 
 describe("handleExportDiagnostics", () => {
   it("copies redacted diagnostics JSON to the clipboard", async () => {

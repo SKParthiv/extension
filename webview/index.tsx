@@ -7,6 +7,7 @@ import {
   removeAttachment,
   toAttachmentResult,
   isCurrentResponse,
+  isBarePrefix,
   attachmentLocation,
 } from "../src/attachments/attachmentPicker"
 import type { Attachment, AttachmentResult } from "../src/attachments/attachmentPicker"
@@ -41,8 +42,9 @@ function ChatView() {
   const [att, setAtt] = useState<Attachment[]>([])
   const [aq, setAq] = useState("")
   const [ar, setAr] = useState<AttachmentResult[]>([])
-  const [aqToken, setAqToken] = useState(0)
-  const aqTokenRef = useRef(0)
+  const [latestReqId, setLatestReqId] = useState(0)
+  const latestReqIdRef = useRef(0)
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ref = useRef<HTMLDivElement>(null)
 
   const msgs = (activeSid && sessionMsgs[activeSid]) ? sessionMsgs[activeSid] : []
@@ -137,7 +139,7 @@ function ChatView() {
           setActiveSid(d.data.activeSessionId)
         }
       }
-      else if (d.type === "attachmentResolved") setAr((prev) => (isCurrentResponse(d.query, aq) ? d.results.map(toAttachmentResult) : prev))
+      else if (d.type === "attachmentResolved") setAr((prev) => (isCurrentResponse(d.query, d.requestId, latestReqIdRef.current) ? d.results.map(toAttachmentResult) : prev))
       // Final assistant message from turn.done.output — deduplicate against already-streamed text
       else if (d.type === "assistantFinalMessage") {
         const sid = d.sessionId || activeSid
@@ -166,7 +168,13 @@ function ChatView() {
     }
     window.addEventListener("message", l)
     vscode.postMessage({ type: "ready", viewId: "chat" })
-    return () => window.removeEventListener("message", l)
+    return () => {
+      window.removeEventListener("message", l)
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+        debounceTimerRef.current = null
+      }
+    }
   }, [activeSid])
 
   const send = () => {
@@ -184,17 +192,30 @@ function ChatView() {
 
   const onAttachmentQuery = (raw: string) => {
     setAq(raw)
+    // Clear any pending debounce timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current)
+      debounceTimerRef.current = null
+    }
     if (!raw.startsWith("#") && !raw.startsWith("@")) {
       setAr([])
-      aqTokenRef.current += 1
-      setAqToken(aqTokenRef.current)
+      latestReqIdRef.current += 1
+      setLatestReqId(latestReqIdRef.current)
+      return
+    }
+    if (isBarePrefix(raw)) {
+      setAr([])
+      latestReqIdRef.current += 1
+      setLatestReqId(latestReqIdRef.current)
       return
     }
     const query = raw.trim()
     if (!query) { setAr([]); return }
-    const token = ++aqTokenRef.current
-    setAqToken(token)
-    vscode.postMessage({ type: "resolveAttachment", query })
+    const reqId = ++latestReqIdRef.current
+    setLatestReqId(reqId)
+    debounceTimerRef.current = setTimeout(() => {
+      vscode.postMessage({ type: "resolveAttachment", query, requestId: reqId })
+    }, 150)
   }
 
   const selectAttachment = (result: AttachmentResult) => {
@@ -208,8 +229,8 @@ function ChatView() {
     setAtt((prev) => addAttachment(prev, attachment))
     setAr([])
     setAq("")
-    aqTokenRef.current += 1
-    setAqToken(aqTokenRef.current)
+    latestReqIdRef.current += 1
+    setLatestReqId(latestReqIdRef.current)
   }
 
   const dropAttachment = (index: number) => {

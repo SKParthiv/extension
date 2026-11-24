@@ -39,7 +39,7 @@ export class GenericViewProvider implements vscode.WebviewViewProvider {
         if (message.type === "cancelTurn") { await this.controller.handleCancel(); return }
         if (message.type === "toolApproval") { await this.controller.handleToolApproval(message); return }
         if (message.type === "contextAction") { await this.controller.handleContextAction(message); return }
-        if (message.type === "resolveAttachment") { await this.controller.resolveAttachment(message.query); return }
+        if (message.type === "resolveAttachment") { await this.controller.resolveAttachment(message.query, message.requestId); return }
         if (message.type === "exportDiagnostics") { this.controller.handleExportDiagnostics(); return }
         if (message.type === "setMode") { return }
         if (message.type === "selectSession") { await this.controller.handleSelectSession(message.sessionId); return }

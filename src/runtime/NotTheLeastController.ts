@@ -22,6 +22,7 @@
 
 import * as vscode from "vscode"
 import { randomUUID } from "node:crypto"
+import { realpathSync } from "node:fs"
 import { TrueForgeRuntime } from "./TrueForgeRuntime"
 import type { AgentEvent } from "./AgentRuntime"
 import { SharedRuntimeState } from "./SharedState"
@@ -535,15 +536,42 @@ export class NotTheLeastController {
   }
 
   /**
+   * True when `filePath` resolves to a path inside any workspace folder,
+   * including symlink resolution. Rejects paths outside all workspace roots
+   * and symlink escapes that resolve outside the workspace.
+   */
+  private isPathInWorkspace(filePath: string): boolean {
+    const folders = vscode.workspace.workspaceFolders
+    if (!folders || folders.length === 0) return false
+    try {
+      const resolved = realpathSync(filePath)
+      return folders.some((f) => {
+        const rootResolved = realpathSync(f.uri.fsPath)
+        const normalizedRoot = rootResolved.replace(/\\/g, "/").replace(/\/$/, "") + "/"
+        const normalizedPath = resolved.replace(/\\/g, "/")
+        return normalizedPath.startsWith(normalizedRoot)
+      })
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * Loads workspace content for user attachments (#file / @symbol picks).
    * Symbol attachments are sliced to their line range; every attachment is
    * bounded to MAX_CHARS_PER_ATTACHMENT so a huge file cannot flood the
    * prompt. Unresolvable paths are logged and skipped, never fatal.
+   * Only paths inside the workspace are accepted; outside-workspace and
+   * symlink-escape paths are rejected.
    */
   private async resolveAttachments(attachments: PromptAttachment[]): Promise<ResolvedAttachment[]> {
     const resolved: ResolvedAttachment[] = []
     for (const attachment of attachments) {
       try {
+        if (!this.isPathInWorkspace(attachment.path)) {
+          logWarn("Prompt", `Attachment path outside workspace: ${attachment.path}`)
+          continue
+        }
         const document = await vscode.workspace.openTextDocument(vscode.Uri.file(attachment.path))
         const text = document.getText()
         const startLine = attachment.startLine
@@ -746,17 +774,26 @@ export class NotTheLeastController {
    * Resolves a user attachment query ("#fileName" or "@symbolName") to
    * file or symbol results for the webview's attachment picker.
    */
-  public async resolveAttachment(query: string): Promise<void> {
+  /**
+   * Monotonic requestId counter for attachment search requests.
+   * Incremented on every resolveAttachment call so the webview can
+   * discard stale out-of-order responses.
+   */
+  private attachmentReqId = 0
+
+  public async resolveAttachment(query: string, requestId?: number): Promise<void> {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; if (!root) return
+    // Use provided requestId or allocate one for backward compat
+    const reqId = requestId ?? ++this.attachmentReqId
     const results: Array<any> = []
     if (query.startsWith("#")) {
       const files = await vscode.workspace.findFiles("**/*" + query.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "*", "**/{node_modules,.git,out,dist,coverage}/**", 10)
-      for (const f of files) results.push({ type: "file", path: vscode.workspace.asRelativePath(f, false), label: f.fsPath.replace(/^.*[\\/]/, "") })
+      for (const f of files) results.push({ type: "file", path: f.fsPath, label: f.fsPath.replace(/^.*[\\/]/, "") })
     } else if (query.startsWith("@")) {
       const syms = await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query.slice(1))
       if (syms) for (const s of syms) results.push({ type: "symbol", path: s.location.uri.fsPath, label: s.name, startLine: s.location.range.start.line + 1, endLine: s.location.range.end.line + 1 })
     }
-    this.broadcast({ type: "attachmentResolved", query, results })
+    this.broadcast({ type: "attachmentResolved", query, requestId: reqId, results })
   }
 
   private resolveAppSessionId(runtimeSessionId?: string): string {

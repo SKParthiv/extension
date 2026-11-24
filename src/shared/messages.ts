@@ -153,7 +153,7 @@ export type WebviewToExtensionMessage =
   /** User renamed a session. */
   | { type: "renameSession"; sessionId: string; title: string }
   /** User typed a query to resolve a file or symbol for attachment. */
-  | { type: "resolveAttachment"; query: string }
+  | { type: "resolveAttachment"; query: string; requestId: number }
   /** User requested a diagnostics report export. */
   | { type: "exportDiagnostics" }
 
@@ -294,7 +294,7 @@ export type ExtensionToWebviewMessage =
   /** Diagnostics data for the report export panel. */
   | { type: "diagnosticsUpdate"; data: DiagnosticsData }
   /** Results from a file / symbol attachment query. */
-  | { type: "attachmentResolved"; query: string; results: Array<{ type: "file" | "symbol"; path: string; label: string; startLine?: number; endLine?: number }> }
+  | { type: "attachmentResolved"; query: string; requestId: number; results: Array<{ type: "file" | "symbol"; path: string; label: string; startLine?: number; endLine?: number }> }
   /** Terminal event summary from a completed / failed / cancelled turn. */
   | { type: "terminalEventReport"; report: TerminalEventReport; requestId?: string; turnId?: string }
   /** Turn is paused waiting for approval, auth or a tool response. */

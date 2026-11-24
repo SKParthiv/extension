@@ -59,6 +59,11 @@ export function isSearchableQuery(query: string): boolean {
   return queryMode(query) !== null && query.slice(1).trim().length > 0
 }
 
+/** True when the query is a bare `#` or `@` with nothing after the prefix. */
+export function isBarePrefix(query: string): boolean {
+  return query === "#" || query === "@"
+}
+
 /**
  * Attach a result to the current attachment list, preventing duplicates by
  * {@link attachmentKey}. Returns the new list (does not mutate the input).
@@ -82,12 +87,11 @@ export function toAttachmentResult(result: Attachment): AttachmentResult {
 
 /**
  * Decides whether an `attachmentResolved` response is still relevant.
- * The controller echoes the originating `query`; the webview only accepts a
- * response whose query matches the most recent one it submitted. This
- * discards stale (out-of-order) asynchronous search responses.
+ * Compares requestId to the latest known requestId, not the query string.
+ * This correctly handles out-of-order responses even when queries differ.
  */
-export function isCurrentResponse(responseQuery: string, latestQuery: string): boolean {
-  return responseQuery === latestQuery
+export function isCurrentResponse(responseQuery: string, responseRequestId: number, latestRequestId: number): boolean {
+  return responseRequestId === latestRequestId
 }
 
 /**

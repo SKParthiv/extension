@@ -17,12 +17,17 @@ export interface ContextSelection {
   omitted: Array<{ candidate: ContextCandidate; reason: "budget" }>
 }
 
+export function isEligibleContext(candidate: ContextCandidate): boolean {
+  return candidate.membership.status === "active"
+}
+
 export function selectContext(candidates: ContextCandidate[], budget: number): ContextSelection {
   if (!Number.isInteger(budget) || budget < 0) {
     throw new Error("Context budget must be a non-negative integer.")
   }
 
-  const ordered = [...candidates].sort(compareCandidates)
+  const eligible = candidates.filter(isEligibleContext)
+  const ordered = [...eligible].sort(compareCandidates)
   const selected: SelectedContext[] = []
   const omitted: ContextSelection["omitted"] = []
   let usedTokens = 0

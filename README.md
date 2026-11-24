@@ -68,7 +68,7 @@
 ## User Guide
 
 ### Views
-- **Chat**: Send prompts, view streaming responses, approve tool calls.
+- **Chat**: Send prompts, view streaming responses, approve tool calls. Create, rename, and switch named sessions. Transcripts stay per session in the webview; TrueForge IDs persist in SQLite.
 - **Agent Activity**: Live agent timeline.
 - **Tool Execution**: Tool requests, approvals, results.
 - **Diagnostics**: Status, timing, token usage, GPU metrics, log export.

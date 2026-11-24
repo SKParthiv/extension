@@ -1,4 +1,10 @@
-import { applyApprovedHunks, createEditProposal, type EditProposal } from "./EditProposal"
+import {
+  applyApprovedHunks,
+  approveHunk,
+  computeHash,
+  createEditProposal,
+  type EditProposal,
+} from "./EditProposal"
 import { SafeUndoService } from "./SafeUndo"
 
 export interface InlineEditWorkspace {
@@ -52,7 +58,9 @@ export class InlineEditService {
 
   public async applyApprovedProposal(proposal: EditProposal): Promise<string> {
     const currentText = await this.workspace.readText(proposal.filePath)
-    if (currentText !== proposal.originalText) {
+    const currentHash = computeHash(currentText)
+    const expectedHash = proposal.expectedHash ?? proposal.originalHash
+    if (currentHash !== expectedHash || currentText !== (proposal.expectedText ?? proposal.originalText)) {
       throw new InlineEditConflictError(proposal.filePath)
     }
 
@@ -62,10 +70,39 @@ export class InlineEditService {
     }
 
     await this.workspace.writeText(proposal.filePath, afterText)
+    proposal.expectedText = afterText
+    proposal.expectedHash = computeHash(afterText)
     this.undo.recordAppliedEdit({
       id: createUndoId(proposal),
       filePath: proposal.filePath,
-      beforeText: proposal.originalText,
+      beforeText: currentText,
+      afterText,
+    })
+    return afterText
+  }
+
+  public async applyApprovedHunk(proposal: EditProposal, hunkId: string): Promise<string> {
+    const currentText = await this.workspace.readText(proposal.filePath)
+    const currentHash = computeHash(currentText)
+    const expectedHash = proposal.expectedHash ?? proposal.originalHash
+    if (currentHash !== expectedHash || currentText !== (proposal.expectedText ?? proposal.originalText)) {
+      throw new InlineEditConflictError(proposal.filePath)
+    }
+
+    const approvedProposal = approveHunk(proposal, hunkId)
+    const afterText = applyApprovedHunks(approvedProposal)
+    if (afterText === currentText) {
+      return currentText
+    }
+
+    await this.workspace.writeText(proposal.filePath, afterText)
+    proposal.expectedText = afterText
+    proposal.expectedHash = computeHash(afterText)
+    proposal.hunks = approvedProposal.hunks
+    this.undo.recordAppliedEdit({
+      id: `${createUndoId(proposal)}:${hunkId}`,
+      filePath: proposal.filePath,
+      beforeText: currentText,
       afterText,
     })
     return afterText

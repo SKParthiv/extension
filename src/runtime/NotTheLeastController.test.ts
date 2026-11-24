@@ -183,12 +183,12 @@ describe("NotTheLeastController view registry and broadcast", () => {
     // Simulate a ready message from Chat only
     ctrl.postSnapshot("chat")
 
-    // Chat gets all three snapshot messages
     const chatTypes = chatMsgs.map((m: any) => m.type)
     expect(chatTypes).toContain("runtimeConnection")
     expect(chatTypes).toContain("runtimeStatus")
     expect(chatTypes).toContain("telemetryUpdate")
-    expect(chatTypes.length).toBe(3)
+    expect(chatTypes).toContain("sessionsList")
+    expect(chatTypes.length).toBe(4)
 
     // Context gets nothing
     expect(ctxMsgs.length).toBe(0)

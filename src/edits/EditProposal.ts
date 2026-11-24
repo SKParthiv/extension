@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+
 export interface EditHunk {
   id: string
   originalStart: number
@@ -10,11 +12,23 @@ export interface EditHunk {
 export interface EditProposal {
   filePath: string
   originalText: string
+  originalHash?: string
   proposedText: string
   hunks: EditHunk[]
+  expectedHash?: string
+  expectedText?: string
 }
 
-export function createEditProposal(filePath: string, originalText: string, proposedText: string): EditProposal {
+export function computeHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex")
+}
+
+export function createEditProposal(
+  filePath: string,
+  originalText: string,
+  proposedText: string,
+  originalHash?: string,
+): EditProposal {
   const original = splitLines(originalText)
   const proposed = splitLines(proposedText)
   const operations = diffLines(original, proposed)
@@ -57,7 +71,16 @@ export function createEditProposal(filePath: string, originalText: string, propo
     hunkIndex += 1
   }
 
-  return { filePath, originalText, proposedText, hunks }
+  const hash = originalHash ?? computeHash(originalText)
+  return {
+    filePath,
+    originalText,
+    originalHash: hash,
+    proposedText,
+    hunks,
+    expectedHash: hash,
+    expectedText: originalText,
+  }
 }
 
 export function approveHunk(proposal: EditProposal, hunkId: string): EditProposal {

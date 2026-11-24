@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest"
 import { assembleContext } from "./ContextAssembler"
 import type { ContextCandidate } from "./ContextSelector"
 
-function candidate(id: string, content: string, tokenEstimate: number): ContextCandidate {
+function candidate(
+  id: string,
+  content: string,
+  tokenEstimate: number,
+  options: Partial<ContextCandidate["membership"]> = {},
+): ContextCandidate {
   return {
     block: {
       id,
@@ -25,6 +30,7 @@ function candidate(id: string, content: string, tokenEstimate: number): ContextC
       position: 0,
       pinned: false,
       locked: false,
+      ...options,
     },
   }
 }
@@ -76,6 +82,21 @@ describe("assembleContext", () => {
     // small snippet (~12 chars -> ~3 tokens) fits within budget 60
     const paths = result.retrieved.map((item) => item.path)
     expect(paths).toContain("small.ts")
+  })
+
+  it("excludes inactive blocks from selected assembly while detecting conflicts", () => {
+    const result = assembleContext({
+      candidates: [
+        candidate("active-rule", "rule: A", 5, { status: "active" }),
+        candidate("inbox-obs", "rule: B", 5, { status: "inbox", pinned: true }),
+        candidate("archived-rule", "archived", 5, { status: "archived" }),
+      ],
+      budget: 20,
+    })
+
+    expect(result.selected.map(({ candidate: c }) => c.block.id)).toEqual(["active-rule"])
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0].key).toBe("rule")
   })
 })
 

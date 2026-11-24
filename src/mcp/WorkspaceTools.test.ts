@@ -135,5 +135,132 @@ describe("WorkspaceTools per-hunk review and safe undo", () => {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
     }
   })
+
+  it("verifies original file hash and rejects stale proposals when file changed before applying hunk", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-tools-stale-"))
+    try {
+      const testFile = "stale-test.txt"
+      const originalContent = "original content\nsecond line\n"
+      await fs.writeFile(path.join(tempDir, testFile), originalContent, "utf8")
+
+      const tools = new WorkspaceTools({
+        workspaceRoot: tempDir,
+        applyHunk: async () => ({ applied: true }),
+      })
+
+      const proposalResult = await tools.proposeChanges([
+        { path: testFile, proposedText: "modified content\nsecond line\n" },
+      ])
+      const proposal = proposalResult.proposals[0]
+
+      // Simulate external user edit before hunk application
+      await fs.writeFile(path.join(tempDir, testFile), "newer user edit\nsecond line\n", "utf8")
+
+      // Attempt to apply hunk must be rejected because file hash changed
+      await expect(tools.applyHunk(proposal.id, proposal.hunks[0].id)).rejects.toThrow(
+        /file content has changed since the proposal was created.*Stale proposal rejected/,
+      )
+
+      // Verify file content was NOT overwritten
+      const diskContent = await fs.readFile(path.join(tempDir, testFile), "utf8")
+      expect(diskContent).toBe("newer user edit\nsecond line\n")
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+
+  it("rejects when external modification occurs between hunk approvals and preserves user edits", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-tools-inter-hunk-"))
+    try {
+      const testFile = "sample.txt"
+      const originalContent = "line 1\nline 2\nline 3\nline 4\nline 5\n"
+      const proposedContent = "line 1\nline 2 modified\nline 3\nline 4 modified\nline 5\n"
+      await fs.writeFile(path.join(tempDir, testFile), originalContent, "utf8")
+
+      let currentFileContent = originalContent
+      const tools = new WorkspaceTools({
+        workspaceRoot: tempDir,
+        applyHunk: async (proposal) => {
+          const afterText = applyApprovedHunks(proposal.editProposal)
+          currentFileContent = afterText
+          await fs.writeFile(path.join(tempDir, proposal.path), afterText, "utf8")
+          return { applied: true }
+        },
+      })
+
+      const proposalResult = await tools.proposeChanges([{ path: testFile, proposedText: proposedContent }])
+      const proposal = proposalResult.proposals[0]
+      expect(proposal.hunks.length).toBeGreaterThanOrEqual(2)
+
+      // Apply first hunk
+      const result0 = await tools.applyHunk(proposal.id, proposal.hunks[0].id)
+      expect(result0.applied).toBe(true)
+
+      // External user edit occurs between hunk 0 and hunk 1
+      const externalEdit = "line 1\nline 2 modified\nuser inserted line\nline 4\nline 5\n"
+      await fs.writeFile(path.join(tempDir, testFile), externalEdit, "utf8")
+
+      // Attempt to apply hunk 1 must be rejected
+      await expect(tools.applyHunk(proposal.id, proposal.hunks[1].id)).rejects.toThrow(
+        /file content has changed since the proposal was created.*Stale proposal rejected/,
+      )
+
+      // Disk content must remain the external edit (user changes preserved)
+      const diskContent = await fs.readFile(path.join(tempDir, testFile), "utf8")
+      expect(diskContent).toBe(externalEdit)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+
+  it("leaves expectedHash unchanged and does not mark hunk applied when write fails", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-tools-fail-write-"))
+    try {
+      const testFile = "fail-write.txt"
+      const originalContent = "original text\n"
+      await fs.writeFile(path.join(tempDir, testFile), originalContent, "utf8")
+
+      let shouldFail = true
+      const tools = new WorkspaceTools({
+        workspaceRoot: tempDir,
+        applyHunk: async (proposal) => {
+          if (shouldFail) {
+            throw new Error("Disk write simulated failure")
+          }
+          const afterText = applyApprovedHunks(proposal.editProposal)
+          await fs.writeFile(path.join(tempDir, proposal.path), afterText, "utf8")
+          return { applied: true }
+        },
+      })
+
+      const proposalResult = await tools.proposeChanges([
+        { path: testFile, proposedText: "modified text\n" },
+      ])
+      const proposal = proposalResult.proposals[0]
+      const originalHash = proposal.originalHash
+
+      // Attempt apply when write fails
+      await expect(tools.applyHunk(proposal.id, proposal.hunks[0].id)).rejects.toThrow(
+        "Disk write simulated failure",
+      )
+
+      // Stored proposal state must have expectedHash untouched and hunk not marked applied
+      const stored = tools.getProposal(proposal.id)!
+      expect(stored.expectedHash).toBe(originalHash)
+      expect(stored.appliedHunkIds.has(proposal.hunks[0].id)).toBe(false)
+      expect(stored.editProposal.hunks[0].approved).toBe(false)
+
+      // File on disk remains unchanged
+      expect(await fs.readFile(path.join(tempDir, testFile), "utf8")).toBe(originalContent)
+
+      // Subsequent retry with working write succeeds
+      shouldFail = false
+      const retryResult = await tools.applyHunk(proposal.id, proposal.hunks[0].id)
+      expect(retryResult.applied).toBe(true)
+      expect(await fs.readFile(path.join(tempDir, testFile), "utf8")).toBe("modified text\n")
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
 })
 

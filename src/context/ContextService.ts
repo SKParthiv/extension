@@ -109,20 +109,67 @@ export class ContextService {
   }
 
   public async createSession(title: string, id?: string): Promise<AppSession> {
+    const trimmed = title.trim()
+    if (!trimmed) {
+      throw new Error("Session title cannot be empty.")
+    }
     const now = new Date().toISOString()
     const sid = id ?? `s-${Date.now()}`
     await this.database.transaction(() => {
       this.database.run(
         "INSERT INTO app_sessions(id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        [sid, title, now, now],
+        [sid, trimmed, now, now],
       )
     })
     return {
       id: sid,
-      title,
+      title: trimmed,
       trueforgeSessionId: null,
       createdAt: now,
       updatedAt: now,
+    }
+  }
+
+  public async renameSession(sessionId: string, newTitle: string): Promise<AppSession> {
+    const trimmed = newTitle.trim()
+    if (!trimmed) {
+      throw new Error("Session title cannot be empty.")
+    }
+    this.requireSession(sessionId)
+    const now = new Date().toISOString()
+    this.database.run(
+      "UPDATE app_sessions SET title = ?, updated_at = ? WHERE id = ?",
+      [trimmed, now, sessionId],
+    )
+    await this.database.save()
+    const session = this.getSession(sessionId)
+    if (!session) {
+      throw new Error(`Session not found after rename: ${sessionId}`)
+    }
+    return session
+  }
+
+  public async touchSession(sessionId: string): Promise<void> {
+    this.requireSession(sessionId)
+    this.database.run(
+      "UPDATE app_sessions SET updated_at = ? WHERE id = ?",
+      [new Date().toISOString(), sessionId],
+    )
+    await this.database.save()
+  }
+
+  public getSession(sessionId: string): AppSession | undefined {
+    const rows = this.database.all("SELECT * FROM app_sessions WHERE id = ?", [sessionId])
+    const row = rows[0]
+    if (!row) {
+      return undefined
+    }
+    return {
+      id: String(row.id),
+      title: String(row.title),
+      trueforgeSessionId: row.trueforge_session_id == null ? null : String(row.trueforge_session_id),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
     }
   }
 

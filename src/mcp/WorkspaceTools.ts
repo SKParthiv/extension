@@ -20,6 +20,7 @@ export interface ProposedChange {
   proposedText: string
   editProposal: EditProposal
   appliedHunkIds: Set<string>
+  expectedHash?: string
 }
 
 export interface WorkspaceToolsOptions {
@@ -142,15 +143,17 @@ export class WorkspaceTools {
       const filePath = await this.resolveFile(change.path)
       const originalText = await fs.readFile(filePath, "utf8")
       const id = hash(`${change.path}:${originalText}:${change.proposedText}`).slice(0, 16)
-      const editProposal = createEditProposal(change.path, originalText, change.proposedText)
+      const originalHash = hash(originalText)
+      const editProposal = createEditProposal(change.path, originalText, change.proposedText, originalHash)
       const stored: ProposedChange = {
         id,
         path: change.path,
         originalText,
-        originalHash: hash(originalText),
+        originalHash,
         proposedText: change.proposedText,
         editProposal,
         appliedHunkIds: new Set<string>(),
+        expectedHash: originalHash,
       }
       this.proposals.set(id, stored)
       proposals.push({
@@ -181,9 +184,29 @@ export class WorkspaceTools {
     if (!this.options.applyHunk) {
       throw new Error("The extension has not configured the approved VS Code edit callback.")
     }
-    proposal.editProposal = approveHunk(proposal.editProposal, hunkId)
-    const result = await this.options.applyHunk(proposal, hunkId)
+
+    // Stale edit protection: verify file hash immediately before applying each hunk
+    const filePath = await this.resolveFile(proposal.path)
+    const currentOnDisk = await fs.readFile(filePath, "utf8")
+    const currentHash = hash(currentOnDisk)
+    const expectedHash = proposal.expectedHash ?? proposal.originalHash
+    if (currentHash !== expectedHash) {
+      throw new Error(
+        `Cannot apply hunk ${hunkId} to ${proposal.path}: file content has changed since the proposal was created (expected hash ${expectedHash}, got ${currentHash}). Stale proposal rejected.`,
+      )
+    }
+
+    const approvedProposal = approveHunk(proposal.editProposal, hunkId)
+    const result = await this.options.applyHunk({ ...proposal, editProposal: approvedProposal }, hunkId)
+    proposal.editProposal = approvedProposal
     proposal.appliedHunkIds.add(hunkId)
+
+    // Update expectedHash after applying hunk
+    const updatedOnDisk = await fs.readFile(filePath, "utf8")
+    proposal.expectedHash = hash(updatedOnDisk)
+    proposal.editProposal.expectedHash = proposal.expectedHash
+    proposal.editProposal.expectedText = updatedOnDisk
+
     return {
       ...(typeof result === "object" && result ? result : {}),
       proposalId,

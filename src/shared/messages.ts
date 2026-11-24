@@ -99,6 +99,21 @@ export interface RequestTiming {
   modelGenerationDuration?: number
 }
 
+export type ContextActionType =
+  | "store"
+  | "attach"
+  | "move"
+  | "copy"
+  | "setPriority"
+  | "setScope"
+  | "setStatus"
+  | "pin"
+  | "unpin"
+  | "lock"
+  | "unlock"
+  | "promote"
+  | "restore"
+
 /**
  * Messages sent **from the webview** to the extension host.
  * Each variant maps to a specific user action in the React UI.
@@ -120,10 +135,23 @@ export type WebviewToExtensionMessage =
   | { type: "toolApproval"; threadId: string; toolCallId: string; decision: "allow" | "deny" }
   /** User wants to review a diff for a specific proposal / hunk. */
   | { type: "reviewDiff"; proposalId: string; hunkId?: string }
-  /** User performed a context management action (store / attach / move / copy). */
-  | { type: "contextAction"; action: "store" | "attach" | "move" | "copy"; blockId: string; destinationSessionId?: string }
+  /** User performed a context management action (store / attach / move / copy / edit / promote / pin / lock). */
+  | {
+      type: "contextAction"
+      action: ContextActionType
+      blockId: string
+      destinationSessionId?: string
+      priority?: "P0" | "P1" | "P2" | "P3" | null
+      scope?: "task" | "project" | "global"
+      status?: "inbox" | "active" | "deferred" | "archived" | "excluded" | "resolved"
+      visibility?: "global" | "project"
+    }
   /** User selected a different session from the sidebar. */
   | { type: "selectSession"; sessionId: string }
+  /** User created a new session. */
+  | { type: "createSession"; title: string }
+  /** User renamed a session. */
+  | { type: "renameSession"; sessionId: string; title: string }
   /** User typed a query to resolve a file or symbol for attachment. */
   | { type: "resolveAttachment"; query: string }
   /** User requested a diagnostics report export. */
@@ -178,6 +206,13 @@ export interface AssistantMessageEntry {
   createdAt?: string
 }
 
+/** Session row shown in the session selector. `ready` is true after a TrueForge ID is persisted. */
+export interface SessionListItem {
+  id: string
+  title: string
+  ready: boolean
+}
+
 /**
  * Messages sent **from the extension host** to the webview.
  * These are the only way the controller pushes state, events, and
@@ -191,15 +226,17 @@ export type ExtensionToWebviewMessage =
   /** The TrueForge agent connection state. */
   | { type: "runtimeConnection"; state: "disconnected" | "connected" | "degraded" }
   /** The user's prompt echoed back so the chat view can render it. */
-  | { type: "userMessage"; text: string; attachments?: Array<{ type: "file" | "symbol"; path: string; label: string }>; timestamp?: number }
+  | { type: "userMessage"; text: string; attachments?: Array<{ type: "file" | "symbol"; path: string; label: string }>; timestamp?: number; sessionId?: string }
   /** Streaming delta from an in-progress assistant reply. The webview appends `text` to the last assistant bubble. */
   | { type: "assistantDelta"; text: string; reasoning?: string; messageId?: string; threadId?: string; sessionId?: string }
   /** A complete assistant message (replaces any in-progress delta for this messageId). */
   | { type: "assistantMessage"; text: string; reasoning?: string; messageId?: string; threadId?: string; createdAt?: string; sessionId?: string }
   /** Final assistant output extracted from a `turn.done` event — used for deduplicated display. */
-  | { type: "assistantFinalMessage"; text: string; reasoning?: string; messageId?: string; threadId?: string }
+  | { type: "assistantFinalMessage"; text: string; reasoning?: string; messageId?: string; threadId?: string; sessionId?: string }
   /** The active session changed (user switched sessions). */
-  | { type: "sessionChanged"; sessionId: string }
+  | { type: "sessionChanged"; sessionId: string; sessions?: Array<SessionListItem> }
+  /** Full list of sessions updated. */
+  | { type: "sessionsList"; activeSessionId: string; sessions: Array<SessionListItem> }
   /** The request stage changed (see {@link RequestStage}). */
   | { type: "stageChanged"; stage: RequestStage }
   /** Performance timing update for the current request. */
@@ -230,12 +267,13 @@ export type ExtensionToWebviewMessage =
   | {
       type: "contextSnapshot"
       activeSessionId: string
-      sessions: Array<{ id: string; title: string }>
+      sessions: Array<SessionListItem>
       blocks: Array<{
         id: string
         title: string
         content: string
         sourceType: string
+        provenance?: string
         scope: "task" | "project" | "global"
         priority: "P0" | "P1" | "P2" | "P3" | null
         status: "inbox" | "active" | "deferred" | "archived" | "excluded" | "resolved"

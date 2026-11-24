@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { attachmentTokenEstimate, formatPromptWithContext } from "./PromptContext"
+import { assembleContext } from "./ContextAssembler"
 import type { ContextCandidate } from "./ContextSelector"
+import type { ContextStatus } from "./ContextService"
 
 function candidate(title: string, content: string): ContextCandidate {
   return {
@@ -92,5 +94,27 @@ describe("formatPromptWithContext", () => {
     expect(selectedAt).toBeGreaterThan(-1)
     expect(retrievedAt).toBeGreaterThan(selectedAt)
     expect(attachedAt).toBeGreaterThan(retrievedAt)
+  })
+
+  it("proves inbox and other inactive blocks cannot enter prompt context through context assembly", () => {
+    const inactiveStatuses: ContextStatus[] = ["inbox", "deferred", "archived", "excluded", "resolved"]
+    const candidates: ContextCandidate[] = [
+      candidate("Active rule", "active instructions"),
+      ...inactiveStatuses.map((status) => {
+        const c = candidate(`Inactive ${status}`, `content for ${status}`)
+        c.membership.status = status
+        c.membership.pinned = true
+        return c
+      }),
+    ]
+
+    const assembly = assembleContext({ candidates, budget: 100 })
+    const prompt = formatPromptWithContext("implement feature", assembly)
+
+    expect(prompt).toContain("### Active rule\nactive instructions")
+    for (const status of inactiveStatuses) {
+      expect(prompt).not.toContain(`Inactive ${status}`)
+      expect(prompt).not.toContain(`content for ${status}`)
+    }
   })
 })

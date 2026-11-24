@@ -17,7 +17,7 @@
  */
 
 import * as vscode from "vscode"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import * as path from "node:path"
 import { TrueForgeRuntime } from "./runtime/TrueForgeRuntime"
 import { NotTheLeastController } from "./runtime/NotTheLeastController"
@@ -78,6 +78,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const fullPath = path.join(workspaceRoot, proposal.path)
       const document = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath))
       const beforeText = document.getText()
+      const beforeHash = createHash("sha256").update(beforeText).digest("hex")
+      const expectedHash = proposal.expectedHash ?? proposal.originalHash
+      if (beforeHash !== expectedHash) {
+        throw new Error(
+          `Cannot apply hunk ${hunkId} to ${proposal.path}: editor content has changed since the proposal was created (expected hash ${expectedHash}, got ${beforeHash}). Stale proposal rejected.`,
+        )
+      }
       const afterText = applyApprovedHunks(proposal.editProposal)
 
       if (beforeText === afterText) {

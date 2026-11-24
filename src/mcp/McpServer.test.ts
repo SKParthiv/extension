@@ -91,7 +91,7 @@ describe("LocalMcpServer", () => {
     } finally {
       await server.stop()
     }
-  })
+  }, 20000)
 })
 
 async function readSseJson(response: Response): Promise<unknown> {

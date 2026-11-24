@@ -8,6 +8,8 @@ Basis: `docs/TODO.md`, the acceptance gates in `docs/PRODUCT_DECISIONS.md`, and 
 - TrueForge runtime adapter: sessions, turns, streamed deltas, tool-approval events, cancellation (`src/runtime/TrueForgeRuntime.ts`).
 - Inline edit command: selection → prompt → replacement → native VS Code diff review → per-hunk accept/reject → apply → safe undo (`src/edits/*`, `agent.inlineEdit` in `src/extension.ts`).
 - Context Manager: SQLite persistence, deterministic budgeted selection, conflict surfacing, observation capture, local retrieval (symbols + bounded text) (`src/context/*`).
+- Context Manager UI: full property editing (priority, scope, status, pin, lock), explicit observation Inbox with promote-to-active, reusable Library management (Store, Move, Copy, Attach, Restore) (`webview/index.tsx`, `src/runtime/NotTheLeastController.ts`).
+- Session Management & Persistence: named create, non-empty rename, switch, last-active restore via `updated_at`, TrueForge ID persist-before-ready, retry of incomplete mappings, in-webview chat isolation, serial session ops, and reject switch during running turns or pending approvals (`src/context/ContextService.ts`, `src/runtime/NotTheLeastController.ts`, `webview/index.tsx`).
 - React Webview: chat with streaming, thinking/tool mode, tool approval cards with Review Diff, context snapshot with Store/Re-attach, assembly summary (`webview/index.tsx`).
 - Bootstrap script registering connector and saved agent through verified SDK methods (`scripts/bootstrap-trueforge.mjs`).
 
@@ -20,10 +22,10 @@ Basis: `docs/TODO.md`, the acceptance gates in `docs/PRODUCT_DECISIONS.md`, and 
 
 ### B. Context Manager completion (TODO item 4)
 
-3. **Editable context blocks.** The snapshot already carries `priority`, `scope`, `status`, `pinned`, `locked` per block (`src/shared/messages.ts` `contextSnapshot`), but the webview renders them read-only. Add UI to edit priority, scope, status, pin and lock.
-4. **Move and Copy UI wiring.** `contextAction` already supports `move` and `copy` with a `destinationSessionId` (`src/shared/messages.ts`), but `webview/index.tsx` renders only Store and Re-attach buttons. Wire the full Store/Move/Attach/Copy semantics described in `docs/CONTEXT_UI.md`.
-5. **Observation Inbox UI.** `ContextService.captureObservation` writes observations to `inbox` status that are never auto-selected (`docs/OBSERVATIONS.md`), but the webview has no inbox listing and no promote action. Add an inbox view with promote-to-active control.
-6. **Session creation and renaming.** The webview only selects among existing sessions (`selectSession`); there is no create/rename message or UI.
+3. **Editable context blocks.** [Implemented] Controls for priority (P0–P3, unset), scope (task, project, global), status (inbox, active, deferred, archived, excluded, resolved), pin and lock are wired with independent state persistence.
+4. **Move and Copy UI wiring.** [Implemented] Wired explicit Store/Move/Attach/Copy/Restore semantics in the Context Manager UI with explicit session selectors.
+5. **Observation Inbox UI.** [Implemented] Dedicated Inbox section displaying block provenance with explicit Promote to Active control.
+6. **Session creation and renaming.** [Implemented] Added `createSession` and `renameSession` messages, full UI controls in Chat and Context views, and TrueForge ID synchronization.
 7. **Auto-prioritized block generation.** Selection honors priority today (`docs/CONTEXT_SELECTION.md` flow), but nothing generates suggested priorities from capture content or retrieval evidence. Generate suggestions on capture; keep them user-editable per TODO item 4.
 
 ### C. Chat UI / user flow (TODO item 5)

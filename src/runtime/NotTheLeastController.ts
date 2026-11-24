@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file
  * Central orchestrator for the VS Code extension side of NotTheLeast.
  * Owns the TrueForge runtime connection, shared state, context database,
@@ -75,6 +75,8 @@ export class NotTheLeastController {
    * skips runtime creation and only retries the mapping.
    */
   private pendingRuntimeSessionId?: string
+  /** Serializes create / rename / switch so overlapping ops cannot mix session state. */
+  private sessionOpGate: Promise<unknown> = Promise.resolve()
   private gpuPollTimer?: ReturnType<typeof setInterval>
   /** Cached result of the most recent context assembly, used for snapshot restoration. */
   private lastContextAssembly?: Record<string, unknown>
@@ -153,8 +155,23 @@ export class NotTheLeastController {
         for (const tool of this.state.toolExecutions) {
           deliver({ type: "toolExecutionUpdate", tool } as unknown as Record<string, unknown>)
         }
-      } else if (short === "context" && this.lastContextAssembly) {
-        deliver({ type: "contextAssembly", ...this.lastContextAssembly } as unknown as Record<string, unknown>)
+      } else if (short === "context") {
+        if (this.lastContextAssembly) {
+          deliver({ type: "contextAssembly", ...this.lastContextAssembly } as unknown as Record<string, unknown>)
+        }
+        const snap = this.getContextSnapshotSync()
+        if (snap) {
+          deliver(snap as unknown as Record<string, unknown>)
+        }
+      } else if (short === "chat") {
+        const sessions = this.sessionListItems()
+        const activeSessionId = this.activeSessionId ?? sessions[0]?.id ?? ""
+        deliver({ type: "sessionsList", activeSessionId, sessions } as unknown as Record<string, unknown>)
+      }
+    } else {
+      const snap = this.getContextSnapshotSync()
+      if (snap) {
+        deliver(snap as unknown as Record<string, unknown>)
       }
     }
   }
@@ -234,24 +251,98 @@ export class NotTheLeastController {
       this.runtimeInitPromise = undefined
     }
   }
+  private enqueueSessionOp<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.sessionOpGate.then(fn, fn)
+    this.sessionOpGate = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  private sessionListItems(): Array<{ id: string; title: string; ready: boolean }> {
+    if (!this.service) return []
+    return this.service.listSessions().map((s) => ({
+      id: s.id,
+      title: s.title,
+      ready: Boolean(s.trueforgeSessionId || this.runtimeSessionIds.get(s.id)),
+    }))
+  }
+
+  private publishSessionState(sessionId: string): void {
+    const sessions = this.sessionListItems()
+    this.broadcast({ type: "sessionChanged", sessionId, sessions })
+    this.broadcast({ type: "sessionsList", activeSessionId: sessionId, sessions })
+    const snap = this.getContextSnapshotSync()
+    if (snap) {
+      this.broadcast(snap)
+    }
+  }
+
+  private sessionOpBlocked(kind: "switch" | "create"): boolean {
+    if (this.state.running) {
+      this.broadcast({
+        type: "error",
+        message: kind === "switch"
+          ? "Cannot switch sessions while a turn is actively running."
+          : "Cannot create session while a turn is actively running.",
+      })
+      return true
+    }
+    if (this.pendingApprovals.size > 0) {
+      this.broadcast({
+        type: "error",
+        message: kind === "switch"
+          ? "Cannot switch sessions while tool approvals are pending."
+          : "Cannot create session while tool approvals are pending.",
+      })
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Hydrate `runtimeSessionIds` from SQLite and restore the last-touched
+   * application session (`listSessions` is ordered by `updated_at DESC`).
+   */
+  public hydratePersistedSessions(): void {
+    if (!this.service) return
+    const sessions = this.service.listSessions()
+    for (const s of sessions) {
+      if (s.trueforgeSessionId) {
+        this.runtimeSessionIds.set(s.id, s.trueforgeSessionId)
+      }
+    }
+    if (sessions.length > 0 && !this.activeSessionId) {
+      this.activeSessionId = sessions[0].id
+      this.state.setActiveSession(sessions[0].id)
+    }
+  }
+
+  /**
+   * Reuse a persisted TrueForge ID, or create one when the mapping is incomplete.
+   * Never creates a second TrueForge session when a mapping already exists.
+   */
+  private async bindRuntimeSession(sessionId: string): Promise<boolean> {
+    if (this.runtimeSessionIds.has(sessionId)) return true
+    const existing = this.service?.getSession(sessionId)
+    if (existing?.trueforgeSessionId) {
+      this.runtimeSessionIds.set(sessionId, existing.trueforgeSessionId)
+      return true
+    }
+    if (!this.runtime || !this.service) return false
+    try {
+      const tfs = await this.runtime.createSession()
+      await this.service.setTrueForgeSessionId(sessionId, tfs.id)
+      this.runtimeSessionIds.set(sessionId, tfs.id)
+      return true
+    } catch (error) {
+      logWarn("Runtime", "Runtime session bind deferred", { sessionId, message: String(error) })
+      return false
+    }
+  }
+
   /**
    * Creates or reuses an application session with a persisted TrueForge
    * mapping. Returns the opaque application session ID, or undefined when
    * session creation cannot proceed.
-   *
-   * == Semantics ==
-   *
-   * 1. Fully initialized session reuse — if activeSessionId is set and
-   *    its runtime mapping is known, return it immediately.
-   * 2. Unavailable service — fail clearly. Never create a runtime session
-   *    for an unpersisted app session.
-   * 3. App-session creation failure — stop. No runtime session created.
-   * 4. Runtime creation failure — pendingAppSessionId retained so the
-   *    next call reuses it. No active session published.
-   * 5. Mapping persistence failure — both pending fields retained. On
-   *    retry, only the mapping update is retried.
-   * 6. Full success — all three steps complete. activeSessionId is set,
-   *    pending fields cleared.
    */
   private async ensureSession(): Promise<string | undefined> {
     if (this.activeSessionId && this.runtimeSessionIds.has(this.activeSessionId)) {
@@ -261,10 +352,20 @@ export class NotTheLeastController {
       logError("Runtime", "Context service not available — cannot create session")
       return undefined
     }
+    // Check if activeSessionId is in SQLite and already has a trueforgeSessionId
+    if (this.activeSessionId) {
+      const existing = this.service.getSession(this.activeSessionId)
+      if (existing?.trueforgeSessionId) {
+        this.runtimeSessionIds.set(this.activeSessionId, existing.trueforgeSessionId)
+        return this.activeSessionId
+      }
+    }
     try {
       if (!this.pendingAppSessionId) {
-        const appId = `s-${randomUUID()}`
-        await this.service.createSession("Agent Session", appId)
+        const appId = this.activeSessionId ?? `s-${randomUUID()}`
+        if (!this.activeSessionId) {
+          await this.service.createSession("Agent Session", appId)
+        }
         this.pendingAppSessionId = appId
       }
       if (!this.pendingRuntimeSessionId) {
@@ -290,6 +391,82 @@ export class NotTheLeastController {
   }
 
   /**
+   * Explicitly create a new named application session and its TrueForge counterpart.
+   */
+  public async handleCreateSession(title: string): Promise<string | undefined> {
+    return this.enqueueSessionOp(() => this.createSessionInner(title))
+  }
+
+  private async createSessionInner(title: string): Promise<string | undefined> {
+    const trimmed = title.trim()
+    if (!trimmed) {
+      this.broadcast({ type: "error", message: "Session title cannot be empty." })
+      return undefined
+    }
+    if (this.sessionOpBlocked("create")) return undefined
+    if (!this.service) {
+      this.broadcast({ type: "error", message: "Context database is not initialized." })
+      return undefined
+    }
+
+    const appId = `s-${randomUUID()}`
+    try {
+      await this.service.createSession(trimmed, appId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      logError("Controller", "Failed to create session", { message: msg })
+      this.broadcast({ type: "error", message: `Failed to create session: ${msg}` })
+      return undefined
+    }
+
+    const bound = await this.bindRuntimeSession(appId)
+    if (!bound) {
+      this.broadcast({
+        type: "error",
+        message: "Runtime session initialization failed. The application session was saved and can retry.",
+      })
+    }
+
+    this.activeSessionId = appId
+    this.state.setActiveSession(appId)
+    this.publishSessionState(appId)
+    return appId
+  }
+
+  /**
+   * Rename an existing application session.
+   */
+  public async handleRenameSession(sessionId: string, title: string): Promise<void> {
+    return this.enqueueSessionOp(() => this.renameSessionInner(sessionId, title))
+  }
+
+  private async renameSessionInner(sessionId: string, title: string): Promise<void> {
+    const trimmed = title.trim()
+    if (!trimmed) {
+      this.broadcast({ type: "error", message: "Session title cannot be empty." })
+      return
+    }
+    if (!this.service) {
+      this.broadcast({ type: "error", message: "Context database is not initialized." })
+      return
+    }
+
+    try {
+      await this.service.renameSession(sessionId, trimmed)
+      const sessions = this.sessionListItems()
+      this.broadcast({ type: "sessionsList", activeSessionId: this.activeSessionId ?? sessionId, sessions })
+      const snap = this.getContextSnapshotSync()
+      if (snap) {
+        this.broadcast(snap)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      logError("Controller", "Failed to rename session", { sessionId, message: msg })
+      this.broadcast({ type: "error", message: `Failed to rename session: ${msg}` })
+    }
+  }
+
+  /**
    * Dispatches a user prompt through the full lifecycle:
    * 1. Ensure runtime is initialized (retry-safe)
    * 2. Resolve or create a runtime session
@@ -308,7 +485,7 @@ export class NotTheLeastController {
     this.state.recordTiming({ submittedAt: Date.now() }); this.state.incrementRequestCount(); this.state.setStage("prompt.submitted")
     this.state.setRunning(true); this.broadcast({ type: "runtimeStatus", status: "running" })
     this.broadcast({ type: "telemetryUpdate", data: this.state.getTelemetryData() })
-    this.broadcast({ type: "userMessage", text, attachments }); this.state.recordActivity("event", "Prompt submitted")
+    this.broadcast({ type: "userMessage", text, attachments, sessionId: this.activeSessionId }); this.state.recordActivity("event", "Prompt submitted")
     let runtimeSid;
     if (this.activeSessionId) runtimeSid = this.runtimeSessionIds.get(this.activeSessionId)
     if (!runtimeSid) {
@@ -416,29 +593,137 @@ export class NotTheLeastController {
    * Routes context management actions from the webview (store, attach,
    * move, copy) to the ContextService.
    */
-  public async handleContextAction(msg: { action: string; blockId: string; destinationSessionId?: string }): Promise<void> {
+  public async handleContextAction(msg: {
+    action: string
+    blockId: string
+    destinationSessionId?: string
+    priority?: any
+    scope?: any
+    status?: any
+    visibility?: any
+  }): Promise<void> {
     if (!this.service || !this.activeSessionId) return
     try {
-      if (msg.action === "store") {
-        // Store the block in the Context Library with project visibility
-        await this.service.store(this.activeSessionId, msg.blockId, "project")
-      } else if (msg.action === "attach") {
-        // Attach the block to the current session with task scope
-        await this.service.attach(this.activeSessionId, msg.blockId, "task")
-      } else if (msg.action === "move" && msg.destinationSessionId) {
-        await this.service.move(this.activeSessionId, msg.destinationSessionId, msg.blockId)
-      } else if (msg.action === "copy" && msg.destinationSessionId) {
-        await this.service.copy(this.activeSessionId, msg.destinationSessionId, msg.blockId)
-      } else {
-        logWarn("Controller", "Unknown context action", { action: msg.action })
-        return
+      switch (msg.action) {
+        case "store":
+          await this.service.store(this.activeSessionId, msg.blockId, msg.visibility ?? "project")
+          break
+        case "attach":
+          await this.service.attach(this.activeSessionId, msg.blockId, msg.scope ?? "task")
+          break
+        case "move":
+          if (!msg.destinationSessionId) throw new Error("Destination session is required for move")
+          await this.service.move(this.activeSessionId, msg.destinationSessionId, msg.blockId)
+          break
+        case "copy":
+          if (!msg.destinationSessionId) throw new Error("Destination session is required for copy")
+          await this.service.copy(this.activeSessionId, msg.destinationSessionId, msg.blockId)
+          break
+        case "setPriority":
+          await this.service.setPriority(this.activeSessionId, msg.blockId, msg.priority ?? null, true)
+          break
+        case "setScope":
+          if (!msg.scope) throw new Error("Scope is required for setScope")
+          await this.service.setScope(this.activeSessionId, msg.blockId, msg.scope)
+          break
+        case "setStatus":
+          if (!msg.status) throw new Error("Status is required for setStatus")
+          await this.service.setStatus(this.activeSessionId, msg.blockId, msg.status)
+          break
+        case "pin":
+          await this.service.pin(this.activeSessionId, msg.blockId)
+          break
+        case "unpin":
+          await this.service.unpin(this.activeSessionId, msg.blockId)
+          break
+        case "lock":
+          await this.service.lock(this.activeSessionId, msg.blockId)
+          break
+        case "unlock":
+          await this.service.unlock(this.activeSessionId, msg.blockId)
+          break
+        case "promote":
+          await this.service.setStatus(this.activeSessionId, msg.blockId, "active")
+          break
+        case "restore":
+          await this.service.restore(this.activeSessionId, msg.blockId)
+          break
+        default:
+          logWarn("Controller", "Unknown context action", { action: msg.action })
+          return
       }
     } catch (err) {
       logError("Controller", "Context action failed", { action: msg.action, blockId: msg.blockId, message: String(err) })
       this.broadcast({ type: "error", message: err instanceof Error ? err.message : String(err) })
       return
     }
-    await this.postSnapshot()
+    const snap = this.getContextSnapshotSync()
+    if (snap) {
+      this.broadcast(snap)
+    }
+  }
+
+  public async handleSelectSession(sessionId: string): Promise<void> {
+    return this.enqueueSessionOp(() => this.selectSessionInner(sessionId))
+  }
+
+  private async selectSessionInner(sessionId: string): Promise<void> {
+    if (!this.service) return
+    if (this.sessionOpBlocked("switch")) return
+    const session = this.service.getSession(sessionId)
+    if (!session) {
+      this.broadcast({ type: "error", message: `Cannot switch to unknown session: ${sessionId}` })
+      return
+    }
+    await this.bindRuntimeSession(sessionId)
+    await this.service.touchSession(sessionId)
+    this.activeSessionId = sessionId
+    this.state.setActiveSession(sessionId)
+    this.publishSessionState(sessionId)
+  }
+
+  public getContextSnapshotSync(): (ExtensionToWebviewMessage & { type: "contextSnapshot" }) | undefined {
+    if (!this.service) return undefined
+    try {
+      const sessions = this.sessionListItems()
+      const activeSessionId = this.activeSessionId ?? sessions[0]?.id ?? ""
+      const candidates = activeSessionId ? this.service.listSessionContext(activeSessionId) : []
+      const blocks = candidates.map(({ block, membership }) => ({
+        id: block.id,
+        title: block.title,
+        content: block.content,
+        sourceType: block.sourceType,
+        provenance: block.provenance,
+        scope: membership.scope,
+        priority: membership.priority,
+        status: membership.status,
+        position: membership.position,
+        pinned: membership.pinned,
+        locked: membership.locked,
+        tokenEstimate: block.tokenEstimate,
+      }))
+      const library = this.service.listLibrary().map(({ block, visibility }) => ({
+        id: block.id,
+        title: block.title,
+        visibility,
+      }))
+      const conflicts = detectConflicts(candidates).map((c) => ({
+        key: c.key,
+        leftTitle: c.left.block.title,
+        rightTitle: c.right.block.title,
+      }))
+      return {
+        type: "contextSnapshot",
+        activeSessionId,
+        sessions,
+        blocks,
+        library,
+        conflicts,
+      }
+    } catch (err) {
+      logWarn("Controller", "Failed to build context snapshot", { message: String(err) })
+      return undefined
+    }
   }
 
   /**
@@ -474,21 +759,31 @@ export class NotTheLeastController {
     this.broadcast({ type: "attachmentResolved", query, results })
   }
 
+  private resolveAppSessionId(runtimeSessionId?: string): string {
+    if (!runtimeSessionId) return this.activeSessionId ?? ""
+    for (const [appId, rtId] of this.runtimeSessionIds.entries()) {
+      if (rtId === runtimeSessionId) return appId
+    }
+    return this.activeSessionId ?? ""
+  }
+
   /**
    * Routes streaming agent events from TrueForgeRuntime to the shared state
    * and broadcasts the corresponding ExtensionToWebviewMessage variants.
    * This is the main event loop for the controller.
    */
   private onRuntimeEvent(event: AgentEvent): void {
+    const eventSessionId = "sessionId" in event ? (event as any).sessionId : undefined
+    const appSessionId = this.resolveAppSessionId(eventSessionId)
     switch (event.type) {
       case "model.message.delta":
         this.state.setLastEventTimestamp(Date.now()); if (!this.state.timing.firstEventAt) this.state.recordTiming({ firstEventAt: Date.now() }); if (!this.state.timing.firstDeltaAt) this.state.recordTiming({ firstDeltaAt: Date.now() }); if (!this.state.timing.firstVisibleTextAt) this.state.recordTiming({ firstVisibleTextAt: Date.now() })
-        this.broadcast({ type: "assistantDelta", text: event.text, reasoning: event.reasoning, sessionId: event.sessionId }); break
-      case "model.message": this.state.setLastEventTimestamp(Date.now()); this.broadcast({ type: "assistantMessage", text: event.text, reasoning: event.reasoning, sessionId: event.sessionId }); break
+        this.broadcast({ type: "assistantDelta", text: event.text, reasoning: event.reasoning, sessionId: appSessionId }); break
+      case "model.message": this.state.setLastEventTimestamp(Date.now()); this.broadcast({ type: "assistantMessage", text: event.text, reasoning: event.reasoning, sessionId: appSessionId }); break
       case "tool.approval_required":
-        for (const tc of event.toolCalls) this.pendingApprovals.set(event.threadId + ":" + tc.id, { appSessionId: "", runtimeSessionId: event.sessionId ?? "", threadId: event.threadId, toolCallId: tc.id })
+        for (const tc of event.toolCalls) this.pendingApprovals.set(event.threadId + ":" + tc.id, { appSessionId, runtimeSessionId: event.sessionId ?? "", threadId: event.threadId, toolCallId: tc.id })
         this.state.setStage("awaiting.approval"); this.state.recordActivity("tool", "Approval needed", event.toolCalls.map(tc => tc.toolName ?? tc.id).join(", "))
-        this.broadcast({ type: "toolApprovalRequired", threadId: event.threadId, toolCalls: event.toolCalls ?? [], sessionId: event.sessionId }); break
+        this.broadcast({ type: "toolApprovalRequired", threadId: event.threadId, toolCalls: event.toolCalls ?? [], sessionId: appSessionId }); break
       case "turn.update": {
         if (event.state.status === "paused") {
           this.broadcast({ type: "turnPaused", status: "paused", threadId: event.threadId ?? undefined })
@@ -505,7 +800,7 @@ export class NotTheLeastController {
           if (txt) termOut = { text: txt, reasoning: out.reasoningContent }
         }
         if (termOut && termOut.text.length > 0) {
-          this.broadcast({ type: "assistantFinalMessage", text: termOut.text, reasoning: termOut.reasoning })
+          this.broadcast({ type: "assistantFinalMessage", text: termOut.text, reasoning: termOut.reasoning, sessionId: appSessionId })
           this.state.setStage("completed")
           this.state.setRunning(false)
           this.broadcast({ type: "runtimeStatus", status: "idle" })
@@ -543,7 +838,13 @@ export class NotTheLeastController {
    * `{globalStorageUri}/context.sqlite`.
    */
   private async initContext(context: vscode.ExtensionContext): Promise<void> {
-    try { this.database = await ContextDatabase.open({ filePath: vscode.Uri.joinPath(context.globalStorageUri, "context.sqlite").fsPath }); this.service = new ContextService(this.database) } catch (e) { logWarn("Context", "Init failed", { message: String(e) }) }
+    try {
+      this.database = await ContextDatabase.open({ filePath: vscode.Uri.joinPath(context.globalStorageUri, "context.sqlite").fsPath })
+      this.service = new ContextService(this.database)
+      this.hydratePersistedSessions()
+    } catch (e) {
+      logWarn("Context", "Init failed", { message: String(e) })
+    }
   }
   /**
    * Starts a 5-second interval polling nvidia-smi for GPU metrics.

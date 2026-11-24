@@ -21,12 +21,44 @@ body {
 }
 
 .session-header,
+.session-bar,
 .status-card {
   display: grid;
   gap: 4px;
   border: 1px solid var(--vscode-widget-border);
   border-radius: 6px;
   padding: 10px;
+}
+
+.session-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+}
+
+.session-bar select {
+  flex: 1;
+  min-width: 120px;
+}
+
+.session-label {
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.session-indicator {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.session-indicator.session-ready {
+  color: var(--vscode-testing-iconPassed);
+}
+
+.session-indicator.session-unbound {
+  color: var(--vscode-editorWarning-foreground);
 }
 
 .eyebrow {
@@ -252,6 +284,34 @@ textarea {
 .status-inbox {
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
+}
+
+.status-active {
+  background: var(--vscode-testing-iconPassed);
+  color: #000;
+}
+
+.status-deferred,
+.status-archived,
+.status-excluded,
+.status-resolved {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  opacity: 0.7;
+}
+
+.context-item.pinned {
+  border-left: 3px solid var(--vscode-editorWarning-foreground);
+}
+
+.promote-btn {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-weight: bold;
+}
+
+.promote-btn:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
 .status-card {

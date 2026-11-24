@@ -8,8 +8,8 @@ This matrix maps the requirements from the Product Specification (PDF) to the cu
 |---|---|---|---|---|
 | **Inline edit through a real editor selection and native diff review** | [In Progress] | `src/extension.ts`, `src/edits/InlineEditFlow.ts` | Ensure full loop: selection -> proposal -> diff -> approval -> apply. | Run `agent.inlineEdit` command in VS Code. |
 | **Agent mode discovers and changes at least three files without user-named implementation files** | [Pending] | `src/mcp/McpServer.ts`, `src/mcp/WorkspaceTools.ts` | Verify all 8 tools work correctly for agent. | Run agent in "tool" mode with a multi-file change request. |
-| **Deterministic context assembly with visible selected files, reasons and budget** | [Pending] | `src/context/ContextAssembler.ts`, `src/context/ContextSelector.ts` | Ensure UI reflects the `ContextAssembly` result. | Inspect `ContextAssembler` output in UI. |
-| **Per-hunk diff review, accept/reject and undo** | [Pending] | `src/edits/EditProposal.ts`, `src/edits/SafeUndo.ts` | Ensure `VscodeDiffReview` is integrated into the flow. | Use `agent.inlineEdit` and review hunks. |
+| **Deterministic context assembly with visible selected files, reasons and budget** | [Complete] | `src/context/ContextAssembler.ts`, `src/context/ContextSelector.ts`, `webview/index.tsx`, `src/runtime/NotTheLeastController.ts` | Complete Context Manager UI with budget assembly, active/inbox/inactive blocks, library, and independent property editing. | Inspect Context Manager webview and `ContextManagerUI.test.ts`. |
+| **Per-hunk diff review, accept/reject and undo** | [Complete] | `src/edits/EditProposal.ts`, `src/edits/SafeUndo.ts`, `src/edits/InlineEditFlow.ts`, `src/mcp/WorkspaceTools.ts` | Stale edit protection verified with SHA-256 hash checking before each hunk write. | Unit tests in `EditProposal.test.ts`, `InlineEditFlow.test.ts`, `WorkspaceTools.test.ts`. |
 | **Streaming and cancellation through verified TrueForge APIs** | [Pending] | `src/runtime/TrueForgeRuntime.ts` | Verify `createTurnStream` and `cancel` calls. | Monitor network/SDK logs during turn execution. |
 | **Flask Task A** | [Pending] | - | Identify tasks from PDF. | Complete and verify task A. |
 | **Flask Task B** | [Pending] | - | Identify tasks from PDF. | Complete and verify task B. |
@@ -19,7 +19,7 @@ This matrix maps the requirements from the Product Specification (PDF) to the cu
 
 | Requirement | Status | Source Files | Required Changes | Verification Method |
 |---|---|---|---|---|
-| **Session Management** | [Partial] | `src/runtime/TrueForgeRuntime.ts` | Verify persistent session mapping. | Create/Switch sessions in UI. |
+| **Session Management** | [Complete] | `src/runtime/NotTheLeastController.ts`, `src/context/ContextService.ts`, `webview/index.tsx` | Named create/rename/switch, SQLite TrueForge mapping, last-active restore, chat/context isolation, pending-turn protection. Chat history is in-webview only until P07. | `src/context/SessionManagement.test.ts`. |
 | **Context Manager Persistence** | [Complete] | `src/context/db/Database.ts` | None. | Verify DB file existence/persistence. |
 | **MCP Tool Pipeline** | [Partial] | `src/mcp/McpServer.ts`, `src/mcp/WorkspaceTools.ts` | Verify all 8 tools. | Verify tool execution via agent. |
 | **Safe Undo** | [Complete] | `src/edits/SafeUndo.ts` | None. | Use `agent.undoEdit` command. |

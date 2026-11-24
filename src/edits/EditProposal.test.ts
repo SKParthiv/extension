@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest"
-import { applyApprovedHunks, approveHunk, createEditProposal } from "./EditProposal"
+import { applyApprovedHunks, approveHunk, computeHash, createEditProposal } from "./EditProposal"
 
 describe("EditProposal", () => {
-  it("creates a non-mutating proposal and applies only explicitly approved hunks", () => {
+  it("creates a non-mutating proposal with cryptographic hashes and applies only explicitly approved hunks", () => {
     const original = "title\nkeep\nfooter"
     const proposed = "title\nchanged\nfooter\nnew line"
     const proposal = createEditProposal("notes.txt", original, proposed)
 
     expect(proposal.originalText).toBe(original)
+    expect(proposal.originalHash).toBe(computeHash(original))
+    expect(proposal.expectedHash).toBe(computeHash(original))
     expect(proposal.proposedText).toBe(proposed)
     expect(proposal.hunks).toHaveLength(2)
     expect(applyApprovedHunks(proposal)).toBe(original)

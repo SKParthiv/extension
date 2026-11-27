@@ -614,6 +614,94 @@ describe("attachment path validation — resolveAttachments", () => {
   })
 }) as any
 
+describe("isPathInWorkspace — real filesystem tests", () => {
+  let ctrl: any
+  let mockVscode: any
+  let tmpDir: string
+
+  beforeEach(async () => {
+    ctrl = makeController()
+    ctrl.service = {
+      listSessionContext: vi.fn().mockResolvedValue([]),
+      getSession: vi.fn(),
+    }
+    mockVscode = await import("vscode")
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nlt-test-"))
+    // Set workspace folder to tmpDir
+    const origFolders = (mockVscode as any).workspace.workspaceFolders
+    ;(mockVscode as any).workspace.workspaceFolders = [
+      { uri: { fsPath: tmpDir } },
+    ]
+  })
+
+  afterEach(async () => {
+    const fs = await import("node:fs")
+    const path = await import("node:path")
+    if (tmpDir) {
+      try {
+        const entries = fs.readdirSync(tmpDir)
+        for (const e of entries) {
+          const full = path.join(tmpDir, e)
+          try { fs.unlinkSync(full) } catch {}
+        }
+        fs.rmdirSync(tmpDir)
+      } catch {}
+    }
+  })
+
+  it("inside-workspace path accepted", async () => {
+    const fs = await import("node:fs")
+    const path = await import("node:path")
+    const filePath = path.join(tmpDir, "inner.ts")
+    fs.writeFileSync(filePath, "// test")
+    expect(ctrl.isPathInWorkspace(filePath)).toBe(true)
+    fs.unlinkSync(filePath)
+  })
+
+  it("outside-workspace path rejected", async () => {
+    const os = await import("node:os")
+    expect(ctrl.isPathInWorkspace(os.tmpdir())).toBe(false)
+  })
+
+  it("symlink escape rejected", async () => {
+    const fs = await import("node:fs")
+    const path = await import("node:path")
+    const outsideDir = path.join(tmpDir, "..", "outside-escape")
+    fs.mkdirSync(outsideDir)
+    const escapeLink = path.join(tmpDir, "escape-link")
+    try { fs.symlinkSync(outsideDir, escapeLink, "junction") } catch {
+      // fallback to dir if junction fails
+      try { fs.symlinkSync(outsideDir, escapeLink) } catch { fs.rmdirSync(outsideDir); return }
+    }
+    const linkTarget = path.join(escapeLink, "leak.txt")
+    fs.writeFileSync(linkTarget, "leak")
+    expect(ctrl.isPathInWorkspace(linkTarget)).toBe(false)
+    fs.unlinkSync(linkTarget)
+    fs.unlinkSync(escapeLink)
+    fs.rmdirSync(outsideDir)
+  })
+
+  it("valid internal symlink accepted", async () => {
+    const fs = await import("node:fs")
+    const path = await import("node:path")
+    const realDir = path.join(tmpDir, "real-dir")
+    fs.mkdirSync(realDir)
+    fs.writeFileSync(path.join(realDir, "a.ts"), "// ok")
+    const linkDir = path.join(tmpDir, "link-dir")
+    const linkFile = path.join(linkDir, "a.ts")
+    try { fs.symlinkSync(realDir, linkDir, "junction") } catch {
+      try { fs.symlinkSync(realDir, linkDir) } catch { fs.rmdirSync(realDir); return }
+    }
+    expect(ctrl.isPathInWorkspace(linkFile)).toBe(true)
+    fs.unlinkSync(path.join(realDir, "a.ts"))
+    fs.rmdirSync(realDir)
+    fs.unlinkSync(linkDir)
+  })
+}) as any
+
 describe("handleExportDiagnostics", () => {
   it("copies redacted diagnostics JSON to the clipboard", async () => {
     const vscode = await import("vscode")

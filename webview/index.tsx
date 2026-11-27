@@ -213,6 +213,8 @@ function ChatView() {
     if (!query) { setAr([]); return }
     const reqId = ++latestReqIdRef.current
     setLatestReqId(reqId)
+    // Clear previous results immediately when a valid new query starts
+    setAr([])
     debounceTimerRef.current = setTimeout(() => {
       vscode.postMessage({ type: "resolveAttachment", query, requestId: reqId })
     }, 150)

@@ -146,6 +146,22 @@ describe("isBarePrefix", () => {
   it("false for empty string", () => {
     expect(isBarePrefix("")).toBe(false)
   })
+  // ── Whitespace-only prefixes ──
+  it("true for '# ' (hash + space)", () => {
+    expect(isBarePrefix("# ")).toBe(true)
+  })
+  it("true for '@ ' (at + space)", () => {
+    expect(isBarePrefix("@ ")).toBe(true)
+  })
+  it("true for '#  ' (hash + multiple spaces)", () => {
+    expect(isBarePrefix("#  ")).toBe(true)
+  })
+  it("true for '@  ' (at + multiple spaces)", () => {
+    expect(isBarePrefix("@  ")).toBe(true)
+  })
+  it("false for '#x ' (hash + content + trailing space)", () => {
+    expect(isBarePrefix("#x ")).toBe(false)
+  })
 })
 
 // ── Stale response rejection ──

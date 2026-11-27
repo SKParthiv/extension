@@ -59,9 +59,10 @@ export function isSearchableQuery(query: string): boolean {
   return queryMode(query) !== null && query.slice(1).trim().length > 0
 }
 
-/** True when the query is a bare `#` or `@` with nothing after the prefix. */
+/** True when the query is a bare `#` or `@` with only whitespace after the prefix. */
 export function isBarePrefix(query: string): boolean {
-  return query === "#" || query === "@"
+  const trimmed = query.trim()
+  return trimmed === "#" || trimmed === "@"
 }
 
 /**

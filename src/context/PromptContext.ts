@@ -25,6 +25,64 @@ export function attachmentTokenEstimate(content: string): number {
 }
 
 /**
+ * Maximum characters allowed per single attachment content.
+ */
+export const MAX_CHARS_PER_ATTACHMENT = 2400
+
+/**
+ * Allocate budget to explicit attachments in selection order.
+ * Each attachment is capped to MAX_CHARS_PER_ATTACHMENT characters.
+ * Returns allocated attachments with token estimates, truncation flags,
+ * and any attachment that was fully omitted due to budget exhaustion.
+ * Never silently discards an attachment — every one is reported.
+ */
+export function assignAttachmentBudget(
+  attachments: ResolvedAttachment[],
+  availableTokens: number,
+): {
+  allocated: Array<{
+    resolved: ResolvedAttachment
+    tokenEstimate: number
+    truncated: boolean
+    reason: "attachment" | "truncated" | "omitted"
+  }>
+  usedTokens: number
+} {
+  const allocated: Array<{
+    resolved: ResolvedAttachment
+    tokenEstimate: number
+    truncated: boolean
+    reason: "attachment" | "truncated" | "omitted"
+  }> = []
+  let usedTokens = 0
+  for (const a of attachments) {
+    const rawChars = a.content.length
+    const boundedChars = Math.min(rawChars, MAX_CHARS_PER_ATTACHMENT)
+    const boundedTokens = attachmentTokenEstimate(a.content.slice(0, boundedChars))
+    const truncated = boundedChars < rawChars
+    const fits = usedTokens + boundedTokens <= availableTokens
+    if (!fits) {
+      // Attachment omitted — still report it
+      allocated.push({
+        resolved: a,
+        tokenEstimate: boundedTokens,
+        truncated: false,
+        reason: "omitted",
+      })
+      continue
+    }
+    allocated.push({
+      resolved: truncated ? { ...a, content: a.content.slice(0, boundedChars) } : a,
+      tokenEstimate: boundedTokens,
+      truncated,
+      reason: "attachment",
+    })
+    usedTokens += boundedTokens
+  }
+  return { allocated, usedTokens }
+}
+
+/**
  * Formats the user prompt with explicitly selected context blocks, retrieved
  * workspace evidence and user-attached files or symbols. Pure formatting —
  * the caller is responsible for loading and bounding file content.

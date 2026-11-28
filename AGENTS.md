@@ -29,3 +29,7 @@
 
 Every implementation step must report changed files, commands run, observed output, limitations, and the next prerequisite. Do not claim a feature or acceptance gate is complete without direct evidence.
 
+## Constitution immutability
+
+`docs/PRODUCT_CONSTITUTION.md` is immutable by default. Only an explicit instruction from the owner authorizes amendments. AI agents must never override, extend or contradict its design decisions.
+

@@ -14,14 +14,44 @@ export interface ToolApproval {
 
 export const toolPolicies: ToolPolicy[] = [
   {
-    name: "echo",
+    name: "list_workspace",
     access: "read-only",
-    description: "Returns supplied text without side effects.",
+    description: "Lists workspace files.",
   },
   {
-    name: "echo_write",
+    name: "read_file",
+    access: "read-only",
+    description: "Reads a bounded workspace file.",
+  },
+  {
+    name: "search_workspace",
+    access: "read-only",
+    description: "Searches workspace text.",
+  },
+  {
+    name: "get_symbols",
+    access: "read-only",
+    description: "Returns workspace symbols.",
+  },
+  {
+    name: "retrieve_context",
+    access: "read-only",
+    description: "Retrieves ranked workspace evidence.",
+  },
+  {
+    name: "propose_changes",
+    access: "read-only",
+    description: "Stages changes without writing to disk.",
+  },
+  {
+    name: "apply_hunk",
     access: "approval-required",
-    description: "Mutation-capable tools require an explicit approval decision.",
+    description: "Applies one approved change hunk.",
+  },
+  {
+    name: "run_command",
+    access: "approval-required",
+    description: "Runs a workspace-scoped command.",
   },
 ]
 

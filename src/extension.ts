@@ -1,24 +1,160 @@
+/**
+ * @file
+ * VS Code extension entry point (activate / deactivate).
+ *
+ * == Startup sequence (activate) ==
+ * 1. Create a LocalMcpServer for MCP tool registration.
+ * 2. Create the NotTheLeastController (runtime, context DB, GPU poller).
+ * 3. Register webview views (GenericViewProvider for the five NotTheLeast views).
+ * 4. Register commands (inline edit, undo edit, copy MCP credentials, copy diagnostics).
+ * 5. Register the MCP server as a VS Code language model tool provider.
+ *
+ * == Shutdown sequence (deactivate) ==
+ * 1. Stop the MCP HTTP server.
+ * 2. Dispose the controller (clears GPU poller, etc.).
+ *
+ * Owned by: VS Code extension host (not user-configurable).
+ */
+
 import * as vscode from "vscode"
-import { ContextViewProvider } from "./webview/ContextViewProvider"
+import { createHash, randomBytes } from "node:crypto"
+import * as path from "node:path"
 import { TrueForgeRuntime } from "./runtime/TrueForgeRuntime"
+import { NotTheLeastController } from "./runtime/NotTheLeastController"
+import { GenericViewProvider } from "./webview/GenericViewProvider"
 import { InlineEditService, createInlineEditProposal } from "./edits/InlineEditFlow"
 import { SafeUndoService } from "./edits/SafeUndo"
 import { createVscodeDiffReviewService } from "./edits/VscodeDiffReview"
-import { approveHunk } from "./edits/EditProposal"
+import { approveHunk, applyApprovedHunks } from "./edits/EditProposal"
+import { LocalMcpServer } from "./mcp/McpServer"
 
+/** Safe undo service shared across inline edit and MCP apply-hunk flows. */
 const undo = new SafeUndoService()
+/** The in-process loopback MCP server for TrueForge agent tool calls. */
+let localMcpServer: LocalMcpServer | undefined
+/** Cached MCP server connection info (host, port, URL, bearer token). */
+let localMcpInfo: Awaited<ReturnType<LocalMcpServer["start"]>> | undefined
+/** Central controller — owns runtime, context DB, state and webview broadcasts. */
+let controller: NotTheLeastController | undefined
 
-export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ContextViewProvider(context.extensionUri, context.globalStorageUri)
+/**
+ * VS Code extension activation entry point.
+ * Sets up MCP server, runtime controller, webview views, commands and
+ * MCP tool provider. Called once by VS Code on extension startup.
+ */
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  if (!workspaceRoot) {
+    await vscode.window.showErrorMessage("TrueForge requires an open workspace before the MCP server can start.")
+    return
+  }
+  const configuration = vscode.workspace.getConfiguration("trueforge")
+  const tokenKey = "trueforge.mcpBearerToken"
+  let token = await context.secrets.get(tokenKey)
+  if (!token) {
+    token = randomBytes(32).toString("hex")
+    await context.secrets.store(tokenKey, token)
+  }
+  localMcpServer = new LocalMcpServer({
+    workspaceRoot,
+    port: configuration.get<number>("mcpPort", 8765),
+    token,
+    symbolProvider: async (relativePath?: string, query?: string) => {
+      if (relativePath) {
+        const uri = vscode.Uri.file(path.join(workspaceRoot, relativePath))
+        const docSymbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+          "vscode.executeDocumentSymbolProvider",
+          uri,
+        )
+        return { path: relativePath, symbols: docSymbols ?? [] }
+      }
+      const wsSymbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+        "vscode.executeWorkspaceSymbolProvider",
+        query ?? "",
+      )
+      return { query: query ?? "", symbols: wsSymbols ?? [] }
+    },
+    applyHunk: async (proposal, hunkId) => {
+      const fullPath = path.join(workspaceRoot, proposal.path)
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath))
+      const beforeText = document.getText()
+      const beforeHash = createHash("sha256").update(beforeText).digest("hex")
+      const expectedHash = proposal.expectedHash ?? proposal.originalHash
+      if (beforeHash !== expectedHash) {
+        throw new Error(
+          `Cannot apply hunk ${hunkId} to ${proposal.path}: editor content has changed since the proposal was created (expected hash ${expectedHash}, got ${beforeHash}). Stale proposal rejected.`,
+        )
+      }
+      const afterText = applyApprovedHunks(proposal.editProposal)
+
+      if (beforeText === afterText) {
+        return { proposalId: proposal.id, hunkId, path: proposal.path, applied: true, noop: true }
+      }
+
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(
+        document.uri,
+        new vscode.Range(document.positionAt(0), document.positionAt(beforeText.length)),
+        afterText,
+      )
+      if (!(await vscode.workspace.applyEdit(edit))) {
+        throw new Error(`VS Code rejected approved hunk ${hunkId} for ${proposal.path}.`)
+      }
+      await document.save()
+
+      undo.recordAppliedEdit({
+        id: `${proposal.path}:${hunkId}:${Date.now()}`,
+        filePath: fullPath,
+        beforeText,
+        afterText,
+      })
+
+      return { proposalId: proposal.id, hunkId, path: proposal.path, applied: true }
+    },
+  })
+  try {
+    localMcpInfo = await localMcpServer.start()
+  } catch (error) {
+    localMcpServer = undefined
+    await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+  }
+
+  // ── NotTheLeast controller (owns runtime, SharedState, logging, GPU telemetry) ──
+  controller = new NotTheLeastController()
+  await controller.initialize(context)
+
+  // ── Register all five NotTheLeast views ──
+  const viewIds = ["nottheleast.chat", "nottheleast.activity", "nottheleast.tools", "nottheleast.diagnostics", "nottheleast.context"]
+
+  for (const vid of viewIds) {
+    const p = new GenericViewProvider(context.extensionUri, vid, controller)
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(vid, p, { webviewOptions: { retainContextWhenHidden: true } }),
+    )
+  }
+  // Connect broadcast to view providers - the ready message in GenericViewProvider registers the view
+  void controller.initializeRuntime()
+
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ContextViewProvider.viewId, provider, {
-      webviewOptions: { retainContextWhenHidden: true },
+    vscode.commands.registerCommand("agent.copyMcpCredentials", async () => {
+      if (!localMcpInfo) {
+        await vscode.window.showErrorMessage("The local TrueForge MCP server is not running.")
+        return
+      }
+      await vscode.env.clipboard.writeText(JSON.stringify({ url: localMcpInfo.url, token: localMcpInfo.token }))
+      await vscode.window.showInformationMessage("TrueForge MCP URL and bearer token copied to the clipboard.")
     }),
   )
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agent.openPanel", async () => {
-      await vscode.commands.executeCommand("workbench.view.extension.trueforge")
+      await vscode.commands.executeCommand("workbench.view.extension.nottheleast")
+    }),
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agent.copyDiagnostics", () => {
+      controller?.handleExportDiagnostics()
     }),
   )
 
@@ -67,6 +203,7 @@ export function activate(context: vscode.ExtensionContext): void {
               if (!(await vscode.workspace.applyEdit(edit))) {
                 throw new Error(`VS Code rejected the edit for ${filePath}.`)
               }
+              await document.save()
             },
           },
           createVscodeDiffReviewService(),
@@ -88,6 +225,11 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (error) {
         await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
       }
+    }),
+  )
+context.subscriptions.push(
+    vscode.commands.registerCommand("agent.copyDiagnostics", async () => {
+      await controller?.handleExportDiagnostics()
     }),
   )
 
@@ -124,8 +266,24 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 }
 
-export function deactivate(): void {}
+/**
+ * VS Code extension deactivation entry point.
+ * Stops the MCP server and disposes the controller.
+ */
+export async function deactivate(): Promise<void> {
+  await localMcpServer?.stop()
+  localMcpServer = undefined
+  localMcpInfo = undefined
+  controller?.dispose()
+  controller = undefined
+}
 
+/**
+ * Sends a "rewrite the selected code" instruction to the model and
+ * extracts the replacement text from the first fenced code block in
+ * the response.
+ * @throws If the model returns an empty replacement.
+ */
 async function requestReplacement(
   runtime: TrueForgeRuntime,
   sessionId: string,
@@ -156,6 +314,10 @@ async function requestReplacement(
   return replacement
 }
 
+/**
+ * Creates an {@link UndoWorkspace} adapter backed by VS Code text documents.
+ * Used by the SafeUndoService to read current and write restored content.
+ */
 function createUndoWorkspace() {
   return {
     readText: async (filePath: string) => (await vscode.workspace.openTextDocument(vscode.Uri.file(filePath))).getText(),

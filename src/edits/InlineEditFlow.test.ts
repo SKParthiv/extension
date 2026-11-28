@@ -88,4 +88,69 @@ describe("InlineEditService", () => {
 
     await expect(service.applyApprovedProposal(proposal)).rejects.toThrow("approved change")
   })
+
+  it("applies individual hunks sequentially and verifies hash before each hunk", async () => {
+    const workspace = createWorkspace("line 1\nline 2\nline 3\n")
+    const undo = new SafeUndoService()
+    const proposal = createInlineEditProposal({
+      filePath: "notes.ts",
+      documentText: workspace.text,
+      selectionStart: 0,
+      selectionEnd: 6,
+      replacementText: "LINE 1",
+    })
+    const service = new InlineEditService(workspace, { open: async () => {} }, undo)
+
+    const afterHunk = await service.applyApprovedHunk(proposal, proposal.hunks[0].id)
+    expect(afterHunk).toBe("LINE 1\nline 2\nline 3\n")
+    expect(workspace.text).toBe("LINE 1\nline 2\nline 3\n")
+
+    // Stale edit check: user modifies workspace text
+    workspace.text = "user edit\nline 2\nline 3\n"
+    await expect(service.applyApprovedHunk(proposal, proposal.hunks[0].id)).rejects.toBeInstanceOf(
+      InlineEditConflictError,
+    )
+    expect(workspace.text).toBe("user edit\nline 2\nline 3\n")
+  })
+
+  it("does not write when hunk is rejected", async () => {
+    const workspace = createWorkspace("original\n")
+    const proposal = createInlineEditProposal({
+      filePath: "notes.ts",
+      documentText: workspace.text,
+      selectionStart: 0,
+      selectionEnd: 8,
+      replacementText: "replacement",
+    })
+    const service = new InlineEditService(workspace, { open: async () => {} }, new SafeUndoService())
+
+    // Apply with unapproved / rejected hunk
+    await expect(service.applyApprovedProposal(proposal)).rejects.toThrow("approved change")
+    expect(workspace.writes).toHaveLength(0)
+    expect(workspace.text).toBe("original\n")
+  })
+
+  it("leaves proposal expected state unchanged when workspace writeText fails", async () => {
+    const failingWorkspace: InlineEditWorkspace = {
+      async readText() {
+        return "original\n"
+      },
+      async writeText() {
+        throw new Error("Disk I/O error")
+      },
+    }
+    const proposal = createInlineEditProposal({
+      filePath: "notes.ts",
+      documentText: "original\n",
+      selectionStart: 0,
+      selectionEnd: 8,
+      replacementText: "modified",
+    })
+    const originalHash = proposal.originalHash
+    const service = new InlineEditService(failingWorkspace, { open: async () => {} }, new SafeUndoService())
+
+    await expect(service.applyApprovedHunk(proposal, proposal.hunks[0].id)).rejects.toThrow("Disk I/O error")
+    expect(proposal.expectedHash).toBe(originalHash)
+    expect(proposal.expectedText).toBe("original\n")
+  })
 })

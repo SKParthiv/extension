@@ -21,12 +21,44 @@ body {
 }
 
 .session-header,
+.session-bar,
 .status-card {
   display: grid;
   gap: 4px;
   border: 1px solid var(--vscode-widget-border);
   border-radius: 6px;
   padding: 10px;
+}
+
+.session-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+}
+
+.session-bar select {
+  flex: 1;
+  min-width: 120px;
+}
+
+.session-label {
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.session-indicator {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.session-indicator.session-ready {
+  color: var(--vscode-testing-iconPassed);
+}
+
+.session-indicator.session-unbound {
+  color: var(--vscode-editorWarning-foreground);
 }
 
 .eyebrow {
@@ -254,6 +286,34 @@ textarea {
   color: var(--vscode-badge-foreground);
 }
 
+.status-active {
+  background: var(--vscode-testing-iconPassed);
+  color: #000;
+}
+
+.status-deferred,
+.status-archived,
+.status-excluded,
+.status-resolved {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  opacity: 0.7;
+}
+
+.context-item.pinned {
+  border-left: 3px solid var(--vscode-editorWarning-foreground);
+}
+
+.promote-btn {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-weight: bold;
+}
+
+.promote-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
 .status-card {
   display: flex;
   align-items: center;
@@ -309,3 +369,64 @@ textarea {
     transform: rotate(360deg);
   }
 }
+
+/* Activity view */
+.activity-list { display: grid; gap: 4px; font-size: 11px; }
+.activity-item { display: grid; grid-template-columns: auto auto 1fr; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 3px; }
+.activity-item:hover { background: var(--vscode-list-hoverBackground); }
+.activity-time { color: var(--vscode-descriptionForeground); font-family: monospace; }
+.activity-type { color: var(--vscode-textLink-foreground); text-transform: uppercase; font-size: 9px; letter-spacing: 0.1em; }
+.activity-desc { color: var(--vscode-descriptionForeground); }
+.pill.type-event { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.pill.type-stage_change { background: var(--vscode-testing-iconPassed); color: #000; }
+.pill.type-tool { background: var(--vscode-charts-yellow); color: #000; }
+.pill.type-approval { background: var(--vscode-editorWarning-foreground); color: #000; }
+.pill.type-error { background: var(--vscode-errorForeground); color: #fff; }
+.pill.type-info { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+
+/* Tool execution view */
+.tool-list { display: grid; gap: 6px; }
+.tool-item { display: grid; gap: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 6px; font-size: 11px; }
+.tool-header { display: flex; align-items: center; justify-content: space-between; }
+.tool-args { overflow-wrap: anywhere; font-size: 10px; }
+.tool-result { font-size: 10px; max-height: 80px; overflow: auto; margin: 0; white-space: pre-wrap; }
+.pill.state-requested { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.pill.state-approved { background: var(--vscode-testing-iconPassed); color: #000; }
+.pill.state-denied { background: var(--vscode-errorForeground); color: #fff; }
+.pill.state-executing { background: var(--vscode-charts-yellow); color: #000; }
+.pill.state-completed { background: var(--vscode-testing-iconPassed); color: #000; }
+.pill.state-failed { background: var(--vscode-errorForeground); color: #fff; }
+
+/* Diagnostics view */
+.diagnostics-card { display: grid; gap: 6px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 8px; }
+.diagnostics-card h3 { margin: 0 0 4px; font-size: 12px; }
+.diag-table { border-collapse: collapse; font-size: 11px; width: 100%; }
+.diag-table td { padding: 3px 6px; border-bottom: 1px solid var(--vscode-widget-border); }
+.diag-table td:first-child { color: var(--vscode-descriptionForeground); width: 120px; }
+.log-list { display: grid; gap: 2px; max-height: 400px; overflow: auto; }
+.log-entry { display: grid; grid-template-columns: auto auto 1fr; gap: 6px; align-items: center; padding: 2px 4px; font-family: monospace; font-size: 10px; }
+.log-time { color: var(--vscode-descriptionForeground); }
+.pill.level-debug { opacity: 0.5; }
+.pill.level-info { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.pill.level-warn { background: var(--vscode-editorWarning-foreground); color: #000; }
+.pill.level-error { background: var(--vscode-errorForeground); color: #fff; }
+
+/* Chat improvements */
+.message-role { font-size: 10px; color: var(--vscode-textLink-foreground); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px; }
+.stage-badge { font-size: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 3px; }
+.attachment-bar { display: flex; gap: 4px; flex-wrap: wrap; }
+.attachment-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 3px; }
+.attachment-pill button { background: none; border: none; color: inherit; cursor: pointer; padding: 0; font-size: 12px; line-height: 1; }
+.attachment-input { font-size: 11px; padding: 4px 6px; border: 1px solid var(--vscode-input-border); border-radius: 3px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
+.attachment-results { display: flex; gap: 4px; flex-wrap: wrap; }
+.attachment-result { font-size: 10px; padding: 2px 6px; cursor: pointer; border: 1px solid var(--vscode-widget-border); border-radius: 3px; background: var(--vscode-dropdown-background); }
+.attachment-result:hover { background: var(--vscode-list-hoverBackground); }
+.mode-selector { display: flex; gap: 4px; }
+.mode-btn { flex: 1; font-size: 11px; padding: 3px; text-align: center; cursor: pointer; border: 1px solid var(--vscode-widget-border); border-radius: 3px; background: var(--vscode-dropdown-background); }
+.mode-btn.active { background: var(--vscode-textLink-foreground); color: var(--vscode-textLink-foreground); border-color: var(--vscode-textLink-foreground); }
+.dismiss-btn { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer; padding: 0 2px; font-size: 14px; }
+.dismiss-btn:hover { color: var(--vscode-foreground); }
+
+/* Status card refinements */
+.status-card { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-size: 11px; }
+.status-text { flex: 1; }
